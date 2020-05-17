@@ -1,54 +1,83 @@
+from datetime import datetime
 import os
 import pickle
 import pprint
 import subprocess as subp
+from typing import List, Tuple
 import re
 
 
-PATH = '/tmp/x86.pickle'
+class State:
+    def __init__(self):
+        self.data = [None] * 256
+        self.total = 0
+        self.binaries = set()
 
 
-state = dict(
-    data = [None] * 256,
-    total = 0,
-    binaries = set(),
-)
-
-
-if os.path.exists(PATH):
-    with open(PATH, 'rb') as f:
-        state = pickle.load(f)
-
-
-def try_add_binary(path: str) -> bool:
-    sha = subp.check_output(['sha256sum', path]).strip()
-    if sha in state['binaries']:
+def try_add_binary(state: State, path: str) -> bool:
+    assert isinstance(path, str), path
+    sha = subp.check_output(['/usr/bin/sha256sum', path]).strip()
+    if sha in state.binaries:
         return False
-    state['binaries'].add(sha)
+    state.binaries.add(sha)
     return True
 
 
-def ingest_binary(path: str) -> None:
-    if not try_add_binary(path):
+def get_object_intervals(binpath: str) -> List[Tuple[int, int]]:
+    output = subp.check_output(['readelf', '--symbols', binpath]).decode('utf-8')
+    results = []
+    for line in output.splitlines():
+        if 'OBJECT' not in line:
+            continue
+        m = re.match('\s*\d+: (?P<addr>[a-f\d]+)\s+(?P<size>[a-f\dx]+)\s+OBJECT\s+GLOBAL\s+DEFAULT\s+(?P<ndx>\d+)\s+(?P<symbol>\w+)', line)
+        if not m:
+            continue
+        #print(m.groupdict())
+        addr = int(m.group('addr'), 16)
+        size = int(m.group('size'), 16)
+        print(f'{addr:x}-{addr+size:x}: {m.group("symbol")}')
+        results.append((addr, addr+size))
+    return results
+
+
+def ingest_binary(state: State, path: str) -> None:
+    if not try_add_binary(state, path):
         print(f'... already seen {path:<60}')
         return
-    print(f'... ingesting {path:<60} (before: {state["total"]:12,})')
+    before_total = state.total
+    print(f'... ingesting {path:<60} (before: {before_total:12,})')
+    #print(obj_intervals)
     output = subp.check_output(['objdump', '-d', path, '-j', '.text']).decode('utf-8')
     lines = output.splitlines()
 
+    #obj_intervals = get_object_intervals(path)
+    #def in_obj_intervals(addr: int) -> bool:
+    #    for start, limit in obj_intervals:
+    #        if start <= addr < limit:
+    #            return True
+    #    return False
+
     for line in lines:
-        m = re.match('\s*\d+:\s+(?P<bytes>([a-f\d]{2} )+)(?P<mnemonic>.*)$', line)
+        m = re.match('\s*(?P<addr>\d+):\s+(?P<bytes>([a-f\d]{2} )+)(?P<mnemonic>.*)$', line)
         if not m:
             continue
-        if not m.group('mnemonic').strip():
+        bytes_group = m.group('bytes')
+        bs = bytes_group.split()
+        if len(bs) == 16:  # Data disassembly.
             continue
-        bs = m.group('bytes')
-        node = state['data']
-        bs = bs.split()
+        addr = int(m.group('addr'), 16)
+        #if in_obj_intervals(addr):
+        #    continue
+        mnemonic = m.group('mnemonic').strip() 
+        if not mnemonic:
+            continue
+        if mnemonic.startswith(('rex.', '(bad)')):
+            continue
+        node = state.data
         for byteno, b in enumerate(int(b, 16) for b in bs):
             if len(bs) == byteno+1:  # Note the length of the terminal.
                 assert node[b] == len(bs) or node[b] is None, (byteno, line)
-                state['total'] += node[b] != len(bs)
+                state.total += node[b] != len(bs)
                 node[b] = len(bs)
             elif node[b] is None:
                 node[b] = [None] * 256
@@ -56,6 +85,10 @@ def ingest_binary(path: str) -> None:
             else:
                 node = node[b]
                 assert isinstance(node, list), (line)
+
+    after_total = state.total
+    delta = after_total - before_total
+    print(f'... ingested  {path:<60} (after:  {after_total:12,}; delta: {delta:12,})')
 
 
 def print_sparsely(d, depth=0, do_print=True):
@@ -81,28 +114,10 @@ def print_sparsely(d, depth=0, do_print=True):
     return maxdepth, seen_terminals, histo
 
 
-def find_binaries(dirpath):
-    output = subp.check_output(['find', dirpath, '-type', 'f', '-executable']).decode('utf-8')
-    candidates = output.splitlines()
-    results = []
-    for candidate in candidates:
-        if b'ELF 64-bit' in subp.check_output(['file', candidate]):
-            results.append(candidate)
-    return results
-
-
-#for path in ('/bin', '/sbin', '/usr/bin', '/usr/local/bin'):
-#    for binpath in find_binaries(path):
-#        ingest_binary(binpath)
-#
-#with open(PATH, 'wb') as f:
-#    pickle.dump(state, f)
-
-maxdepth, seen_terminals, histo = print_sparsely(state['data'], do_print=False)
-print('maxdepth:      ', maxdepth)
-print('seen terminals:', seen_terminals)
-print('total:         ', state['total'])
-print('histo:         ', list(zip(range(len(histo)), histo)))
-print('binaries:      ', len(state['binaries']))
-print('1B terminals:  ', sum(1 for item in state['data'] if isinstance(item, int)))
-print('1B productions:', sum(1 for item in state['data'] if isinstance(item, list)))
+def load_state(path: str) -> State:
+    load_start = datetime.now()
+    with open(path, 'rb') as f:
+        state = pickle.load(f)
+    load_end = datetime.now()
+    print('load time:', load_end-load_start)
+    return state

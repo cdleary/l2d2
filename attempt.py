@@ -13,29 +13,39 @@ from jax import numpy as jnp
 from jax import random as rng
 
 import float_helpers
+import ingest
+import ingest_sampler
 
-BYTES = 3
-CLASSES = 4
-INPUT_LEN = 1024
-CARRY_LEN = INPUT_LEN-1
-EVAL_MINIBATCHES = 16
-STEP_SIZE=1e-6
-FC = 1024
-MINIBATCH_SIZE = 32
+BYTES = 7               # Input byte count (with instruction data).
+INPUT_FLOATS_PER_BYTE = 15
+INPUT_FLOATS = (        # Bytes are turned into a number of floats.
+    BYTES * INPUT_FLOATS_PER_BYTE)
+CLASSES = BYTES+1       # Length categories; 0 for "not a valid instruction".
+INPUT_LEN = 1024        # Vector dimension input to recurrent structure.
+CARRY_LEN = (           # Vector dimension carried to next recurrent structure.
+    INPUT_LEN-INPUT_FLOATS_PER_BYTE)
+EVAL_MINIBATCHES = 16   # Number of minibatches for during-training eval.
+STEP_SIZE=1e-6          # Learning rate.
+FC = 1024               # Fully connected neurons to use on last hidden output.
+MINIBATCH_SIZE = 32     # Number of samples per minibatch.
 
 
 @jax.jit
 def step(xs, p):
-    assert xs.shape[0] == MINIBATCH_SIZE, xs.shape
+    assert xs.shape == (MINIBATCH_SIZE, INPUT_FLOATS), xs.shape
     h = jnp.zeros((MINIBATCH_SIZE, CARRY_LEN))
-    for i in range(BYTES):
-        w, b = p[i]
-        x = xs[:,i:i+1]
-        x = jnp.concatenate((h, x), axis=-1)
+    for byteno, i in enumerate(range(0, BYTES*INPUT_FLOATS_PER_BYTE, INPUT_FLOATS_PER_BYTE)):
+        w, b = p[byteno]
+        x = xs[:,i:i+INPUT_FLOATS_PER_BYTE]
+        assert x.shape == (MINIBATCH_SIZE, INPUT_FLOATS_PER_BYTE), x.shape
+        x = jnp.concatenate((x, h), axis=-1)
+        assert x.shape == (MINIBATCH_SIZE, INPUT_LEN), x.shape
         y = x @ w + b
         z = jnp.tanh(y)
         h = z
+    assert h.shape == (MINIBATCH_SIZE, CARRY_LEN)
     z = jnp.tanh(h @ p[-2])
+    assert z.shape == (MINIBATCH_SIZE, FC)
     return jax.nn.softmax(z @ p[-1])
 
 
@@ -43,16 +53,33 @@ def byte_to_float(x):
     assert x & 0xff == x, x
     return float_helpers.parts2float((0, float_helpers.BIAS, x << (23-8)))
 
-def value_to_sample(x):
-    result = jnp.array([
-        byte_to_float((x >> 16) & 0xff),
-        byte_to_float((x >> 8) & 0xff),
-        byte_to_float((x >> 0) & 0xff),
-    ], dtype='float32')
-    return result
+
+def crumb(b: int, index: int) -> int:
+    return (b >> (2 * index)) & 3
+
+
+def value_byte_to_floats(b):
+    pieces = [
+        byte_to_float(b),               # value for whole byte
+        byte_to_float((b >> 4) & 0xf),  # upper nibble
+        byte_to_float(b & 0x0f),        # lower nibble
+        byte_to_float(crumb(b, 0)),
+        byte_to_float(crumb(b, 1)),
+        byte_to_float(crumb(b, 2)),
+        byte_to_float(crumb(b, 3)),
+    ]
+    for i in range(8):
+        pieces.append(byte_to_float(bit(b, i)))
+    return np.array(pieces)
+
+
+def value_to_sample(bs):
+    return jnp.concatenate(tuple(value_byte_to_floats(b) for b in bs))
 
 
 def loss(p, sample, target):
+    assert sample.shape == (MINIBATCH_SIZE, INPUT_FLOATS)
+    assert target.shape == (MINIBATCH_SIZE,), target.shape
     predictions = step(sample, p)
     labels = jax.nn.one_hot(target, CLASSES, dtype='float32')
     return jnp.sum((labels - predictions)**2)
@@ -64,9 +91,11 @@ opt_init, opt_update, get_params = optimizers.sgd(step_size=STEP_SIZE)
 
 @jax.jit
 def train_step(i, opt_state, sample, target):
-  params = get_params(opt_state)
-  g = jax.grad(loss)(params, sample, target)
-  return opt_update(i, g, opt_state)
+    assert sample.shape == (MINIBATCH_SIZE, INPUT_FLOATS)
+    assert target.shape == (MINIBATCH_SIZE,), target
+    params = get_params(opt_state)
+    g = jax.grad(loss)(params, sample, target)
+    return opt_update(i, g, opt_state)
 
 
 def read_records(limit=False):
@@ -125,20 +154,44 @@ def minibatch_iter(d):
         yield jnp.array(samples), jnp.array(targets)
 
 
+def time_train_step(opt_state):
+    fake_sample = jnp.zeros((MINIBATCH_SIZE, INPUT_FLOATS), dtype='float32')
+    fake_target = jnp.zeros((MINIBATCH_SIZE,), dtype='int8')
+
+    # Warmup.
+    train_step(0, opt_state, fake_sample, fake_target)
+
+    # Timed.
+    start = datetime.now()
+    train_step(0, opt_state, fake_sample, fake_target)
+    end = datetime.now()
+    return end - start
+
+
 def run_train():
     train_start = datetime.now()
-    d = read_records(limit=False)
+
+    # Initialize parameters.
     key = rng.PRNGKey(0)
-    p = [(rng.normal(key, (INPUT_LEN, CARRY_LEN)), rng.normal(key, (CARRY_LEN,))) for _ in range(BYTES)]
+    p = [(rng.normal(key, (INPUT_LEN, CARRY_LEN)),
+          rng.normal(key, (CARRY_LEN,)))
+         for _ in range(BYTES)]
     p.append(rng.normal(key, (CARRY_LEN, FC)))
     p.append(rng.normal(key, (FC, CLASSES)))
+
+    # Package up in optimizer state.
     opt_state = opt_init(p)
 
-    for epoch in range(16):
-        print('... epoch shuffle', epoch)
-        random.shuffle(d)
+    step_time = time_train_step(opt_state)
+    steps_per_sec = 1.0/step_time.total_seconds()
+    samples_per_sec = steps_per_sec * MINIBATCH_SIZE
+    print(f'step time approximately: {step_time}; {steps_per_sec} steps/s; {samples_per_sec} samples/s')
+
+    data = ingest.load_state('/tmp/x86.pickle')
+
+    for epoch in range(1):
         print('... epoch start', epoch)
-        for i, minibatch in enumerate(minibatch_iter(d)):
+        for i, minibatch in enumerate(ingest_sampler.sample_minibatches_no_replacement(data, MINIBATCH_SIZE, BYTES)):
             if i % 256 == 255:
                 now = datetime.now()
                 print('... epoch', epoch, 'step', i, '@', now, '@ {:.2f} step/s'.format(i / (now-train_start).total_seconds()))
