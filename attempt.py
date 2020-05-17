@@ -18,21 +18,20 @@ BYTES = 3
 CLASSES = 4
 INPUT_LEN = 1024
 CARRY_LEN = INPUT_LEN-1
-EVAL_SAMPLES = 1024
+EVAL_MINIBATCHES = 16
 STEP_SIZE=1e-6
 FC = 1024
-
-
-H0 = jnp.zeros((CARRY_LEN,))
+MINIBATCH_SIZE = 32
 
 
 @jax.jit
 def step(xs, p):
-    h = H0
+    assert xs.shape[0] == MINIBATCH_SIZE, xs.shape
+    h = jnp.zeros((MINIBATCH_SIZE, CARRY_LEN))
     for i in range(BYTES):
         w, b = p[i]
-        x = xs[i:i+1]
-        x = jnp.concatenate((h, x))
+        x = xs[:,i:i+1]
+        x = jnp.concatenate((h, x), axis=-1)
         y = x @ w + b
         z = jnp.tanh(y)
         h = z
@@ -70,24 +69,28 @@ def train_step(i, opt_state, sample, target):
   return opt_update(i, g, opt_state)
 
 
-def read_records():
+def read_records(limit=False):
     d = []
     with open(os.path.expanduser('~/x86_3B.csv')) as f:
         reader = csv.reader(f, delimiter=';')
         for row in reader:
             d.append((int(row[0].replace(' ', ''), 16), int(row[1])))
+            if limit and len(d) == MINIBATCH_SIZE:
+                break
     print(f'records read: {len(d):,}')
     return d
 
 
 def run_eval(p, d):
     confusion = collections.defaultdict(lambda: 0)
-    for in_bytes, want in random.sample(d, EVAL_SAMPLES):
-        sample = value_to_sample(in_bytes)
-        probs = step(sample, p)
+    for samples, wants in random_minibatch_iter(d, EVAL_MINIBATCHES):
+        #print('samples:', samples)
+        #print('  wants:', wants)
+        probs = step(samples, p)
         #print('probs:', probs)
-        got = probs.argmax(axis=0)
-        confusion[(want, got.item())] += 1
+        gots = probs.argmax(axis=-1)
+        for i in range(MINIBATCH_SIZE):
+            confusion[(wants[i].item(), gots[i].item())] += 1
 
 
     for want in range(CLASSES):
@@ -96,25 +99,35 @@ def run_eval(p, d):
             print('{:3d}'.format(confusion[(want, got)]), end=' ')
         print()
 
-    accuracy = sum(confusion[(i, i)] for i in range(CLASSES)) / float(EVAL_SAMPLES) * 100.0
+    accuracy = sum(confusion[(i, i)] for i in range(CLASSES)) / float(sum(confusion.values())) * 100.0
     print(f'accuracy: {accuracy:.2f}%')
+
+
+def random_minibatch_iter(d, count):
+    for _ in range(count):
+        sampled = random.sample(d, MINIBATCH_SIZE)
+        samples = jnp.array([value_to_sample(s) for s, _ in sampled])
+        targets = jnp.array([t for _, t in sampled])
+        yield samples, targets
 
 
 def minibatch_iter(d):
     samples = []
     targets = []
     for in_bytes, target in d:
-        minibatch.append(value_to_sample(in_bytes))
+        samples.append(value_to_sample(in_bytes))
         targets.append(target)
-        if len(samples) % 128 == 0:
+        if len(samples) == MINIBATCH_SIZE:
             yield jnp.array(samples), jnp.array(targets)
+            samples.clear()
+            targets.clear()
     if samples:
         yield jnp.array(samples), jnp.array(targets)
 
 
 def run_train():
     train_start = datetime.now()
-    d = read_records()
+    d = read_records(limit=False)
     key = rng.PRNGKey(0)
     p = [(rng.normal(key, (INPUT_LEN, CARRY_LEN)), rng.normal(key, (CARRY_LEN,))) for _ in range(BYTES)]
     p.append(rng.normal(key, (CARRY_LEN, FC)))
@@ -133,7 +146,7 @@ def run_train():
             samples, targets = minibatch
             opt_state = train_step(i, opt_state, samples, targets)
         p = get_params(opt_state)
-        run_eval(p)
+        run_eval(p, d)
 
     train_end = datetime.now()
 
