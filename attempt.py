@@ -141,7 +141,7 @@ def run_train():
         for i, minibatch in enumerate(minibatch_iter(d)):
             if i % 256 == 255:
                 now = datetime.now()
-                print('... step', i, '@', now, '@ {:.2f} step/s'.format(i / (now-train_start).total_seconds()))
+                print('... epoch', epoch, 'step', i, '@', now, '@ {:.2f} step/s'.format(i / (now-train_start).total_seconds()))
                 run_eval(get_params(opt_state), d)
             samples, targets = minibatch
             opt_state = train_step(i, opt_state, samples, targets)
