@@ -19,38 +19,30 @@ CLASSES = 4
 INPUT_LEN = 1024
 CARRY_LEN = INPUT_LEN-1
 EVAL_SAMPLES = 1024
+STEP_SIZE=1e-6
+FC = 1024
 
 
-key = rng.PRNGKey(0)
 H0 = jnp.zeros((CARRY_LEN,))
-p = [(rng.normal(key, (INPUT_LEN, CARRY_LEN)), rng.normal(key, (CARRY_LEN,)))
-     for _ in range(BYTES)]
-p.append(rng.normal(key, (CARRY_LEN, CLASSES)))
 
 
 @jax.jit
 def step(xs, p):
     h = H0
-    for i, (w, b) in enumerate(p[:-1]):
-        x = jnp.concatenate((xs[i:i+1], h))
+    for i in range(BYTES):
+        w, b = p[i]
+        x = xs[i:i+1]
+        x = jnp.concatenate((h, x))
         y = x @ w + b
         z = jnp.tanh(y)
         h = z
-    w = p[-1]
-    return jax.nn.softmax(h @ w)
+    z = jnp.tanh(h @ p[-2])
+    return jax.nn.softmax(z @ p[-1])
 
 
 def byte_to_float(x):
     assert x & 0xff == x, x
     return float_helpers.parts2float((0, float_helpers.BIAS, x << (23-8)))
-
-d = {}
-with open(os.path.expanduser('~/x86_3B.csv')) as f:
-    reader = csv.reader(f, delimiter=';')
-    for row in reader:
-        d[int(row[0].replace(' ', ''), 16)] = int(row[1])
-print(f'records read: {len(d):,}')
-
 
 def value_to_sample(x):
     result = jnp.array([
@@ -58,6 +50,7 @@ def value_to_sample(x):
         byte_to_float((x >> 8) & 0xff),
         byte_to_float((x >> 0) & 0xff),
     ], dtype='float32')
+    return result
 
 
 def loss(p, sample, target):
@@ -67,7 +60,7 @@ def loss(p, sample, target):
 
 
 #opt_init, opt_update, get_params = optimizers.adagrad(step_size=1e-3)
-opt_init, opt_update, get_params = optimizers.sgd(step_size=1e-5)
+opt_init, opt_update, get_params = optimizers.sgd(step_size=STEP_SIZE)
 
 
 @jax.jit
@@ -77,25 +70,19 @@ def train_step(i, opt_state, sample, target):
   return opt_update(i, g, opt_state)
 
 
-train_start = datetime.now()
-opt_state = opt_init(p)
+def read_records():
+    d = []
+    with open(os.path.expanduser('~/x86_3B.csv')) as f:
+        reader = csv.reader(f, delimiter=';')
+        for row in reader:
+            d.append((int(row[0].replace(' ', ''), 16), int(row[1])))
+    print(f'records read: {len(d):,}')
+    return d
 
-for i in range(8):
-    for i in range(8192):
-        if i % 1024 == 1023:
-            now = datetime.now()
-            print('... step', i, '@', now, '@ {:.2f} step/s'.format(i / (now-train_start).total_seconds()))
-        in_bytes = random.randrange(0xffffff+1)
-        target = d.get(in_bytes, 0)
-        sample = value_to_sample(in_bytes)
-        #print('sample:', sample, 'target:', target)
-        opt_state = train_step(i, opt_state, sample, target)
-    p = get_params(opt_state)
 
+def run_eval(p, d):
     confusion = collections.defaultdict(lambda: 0)
-    for i in range(EVAL_SAMPLES):
-        in_bytes = random.randrange(0xffffff+1)
-        want = d.get(in_bytes, 0)
+    for in_bytes, want in random.sample(d, EVAL_SAMPLES):
         sample = value_to_sample(in_bytes)
         probs = step(sample, p)
         #print('probs:', probs)
@@ -112,8 +99,49 @@ for i in range(8):
     accuracy = sum(confusion[(i, i)] for i in range(CLASSES)) / float(EVAL_SAMPLES) * 100.0
     print(f'accuracy: {accuracy:.2f}%')
 
-train_end = datetime.now()
 
-print('train time:', train_end - train_start)
+def minibatch_iter(d):
+    samples = []
+    targets = []
+    for in_bytes, target in d:
+        minibatch.append(value_to_sample(in_bytes))
+        targets.append(target)
+        if len(samples) % 128 == 0:
+            yield jnp.array(samples), jnp.array(targets)
+    if samples:
+        yield jnp.array(samples), jnp.array(targets)
 
 
+def run_train():
+    train_start = datetime.now()
+    d = read_records()
+    key = rng.PRNGKey(0)
+    p = [(rng.normal(key, (INPUT_LEN, CARRY_LEN)), rng.normal(key, (CARRY_LEN,))) for _ in range(BYTES)]
+    p.append(rng.normal(key, (CARRY_LEN, FC)))
+    p.append(rng.normal(key, (FC, CLASSES)))
+    opt_state = opt_init(p)
+
+    for epoch in range(16):
+        print('... epoch shuffle', epoch)
+        random.shuffle(d)
+        print('... epoch start', epoch)
+        for i, minibatch in enumerate(minibatch_iter(d)):
+            if i % 256 == 255:
+                now = datetime.now()
+                print('... step', i, '@', now, '@ {:.2f} step/s'.format(i / (now-train_start).total_seconds()))
+                run_eval(get_params(opt_state), d)
+            samples, targets = minibatch
+            opt_state = train_step(i, opt_state, samples, targets)
+        p = get_params(opt_state)
+        run_eval(p)
+
+    train_end = datetime.now()
+
+    print('train time:', train_end - train_start)
+
+
+def main():
+    run_train()
+
+if __name__ == '__main__':
+    main()
