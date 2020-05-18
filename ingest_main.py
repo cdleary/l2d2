@@ -36,7 +36,7 @@ def main():
 
         for binpath in itertools.chain.from_iterable(find_binaries(path) for path in os.getenv('PATH').split(':')):
             ingest.ingest_binary(state, binpath)
-            if opts.ingest_limit and len(state.binaries) > opts.ingest_limit:
+            if opts.ingest_limit and len(state.binaries) >= opts.ingest_limit:
                 print('... stopping at ingest limit')
                 break
 
