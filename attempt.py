@@ -1,10 +1,7 @@
 import collections
 import datetime
-import math
-import csv
 import os
-import random
-import struct
+import optparse
 import sys
 from typing import List, Tuple
 
@@ -25,12 +22,11 @@ INPUT_FLOATS = (        # Bytes are turned into a number of floats.
     BYTES * INPUT_FLOATS_PER_BYTE)
 CLASSES = BYTES+1       # Length categories; 0 for "not a valid instruction".
 INPUT_LEN = 512         # Vector dimension input to recurrent structure.
-CARRY_LEN = (           # Vector dimension carried to next recurrent structure.
-    INPUT_LEN-INPUT_FLOATS_PER_BYTE)
+CARRY_LEN = INPUT_LEN   # Vector dimension carried to next recurrent structure.
 EVAL_MINIBATCHES = 1024 # Number of minibatches for during-training eval.
 STEP_SIZE = 1e-5        # Learning rate.
 FC = 1024               # Fully connected neurons to use on last hidden output.
-MINIBATCH_SIZE = 32     # Number of samples per minibatch.
+MINIBATCH_SIZE = 128    # Number of samples per minibatch.
 
 
 @jax.jit
@@ -41,7 +37,7 @@ def step(xs, p):
         w, b = p[byteno]
         x = xs[:,i:i+INPUT_FLOATS_PER_BYTE]
         assert x.shape == (MINIBATCH_SIZE, INPUT_FLOATS_PER_BYTE), x.shape
-        x = jnp.concatenate((x, h), axis=-1)
+        x = jnp.concatenate((x, h[:,INPUT_FLOATS_PER_BYTE:]), axis=-1)
         assert x.shape == (MINIBATCH_SIZE, INPUT_LEN), x.shape
         y = x @ w + b
         z = jnp.tanh(y)
@@ -143,16 +139,28 @@ def run_eval(p, eval_minibatches: Tuple):
 def time_train_step(opt_state) -> datetime.timedelta:
     """Times a single training step after warmup."""
     fake_sample = np.zeros((MINIBATCH_SIZE, INPUT_FLOATS), dtype='float32')
-    fake_target = np.zeros((MINIBATCH_SIZE,), dtype='int8')
+    fake_target = np.zeros((MINIBATCH_SIZE,), dtype='int32')
 
-    # Warmup.
-    train_step(0, opt_state, fake_sample, fake_target)
+    # Forward warmup.
+    loss(get_params(opt_state), fake_sample, fake_target).block_until_ready()
 
-    # Timed.
+    # Forward timed.
     start = datetime.datetime.now()
-    train_step(0, opt_state, fake_sample, fake_target)
+    loss(get_params(opt_state), fake_sample, fake_target).block_until_ready()
     end = datetime.datetime.now()
-    return end - start
+    fwd_time = end - start
+
+    # Train warmup.
+    opt_state = train_step(0, opt_state, fake_sample, fake_target)
+    get_params(opt_state)[-1].block_until_ready()
+
+    # Train timed.
+    start = datetime.datetime.now()
+    opt_state = train_step(0, opt_state, fake_sample, fake_target)
+    get_params(opt_state)[-1].block_until_ready()
+    end = datetime.datetime.now()
+    step_time = end - start
+    return fwd_time, step_time
 
 
 def samples_to_input(samples: List[List[int]]) -> np.array:
@@ -160,24 +168,37 @@ def samples_to_input(samples: List[List[int]]) -> np.array:
     return np.array([value_to_sample(sample) for sample in samples])
 
 
-def run_train() -> None:
-    """Runs a training routine."""
-    # Initialize parameters.
-    key = rng.PRNGKey(0)
+@jax.jit
+def init_params(key):
     p = [(rng.normal(key, (INPUT_LEN, CARRY_LEN)),
           rng.normal(key, (CARRY_LEN,)))
          for _ in range(BYTES)]
     p.append(rng.normal(key, (CARRY_LEN, FC)))
     p.append(rng.normal(key, (FC, CLASSES)))
+    return p
+
+
+def run_train(time_step_only) -> None:
+    """Runs a training routine."""
+    # Initialize parameters.
+    key = rng.PRNGKey(0)
+    p = init_params(key)
 
     # Package up in optimizer state.
     opt_state = opt_init(p)
 
-    step_time = time_train_step(opt_state)
+    fwd_time, step_time = time_train_step(opt_state)
     steps_per_sec = 1.0/step_time.total_seconds()
     samples_per_sec = steps_per_sec * MINIBATCH_SIZE
-    print(f'step time approximately: {step_time}; {steps_per_sec:.1f} '
+    fwd_percent = fwd_time.total_seconds() / step_time.total_seconds() * 100.0
+    fwd_us = int(fwd_time.total_seconds() * 1e6)
+    step_us = int(step_time.total_seconds() * 1e6)
+    print(f'fwd time approximately:  {fwd_us:6,} us ({fwd_percent:.2f}%)')
+    print(f'step time approximately: {step_us:6,} us; {steps_per_sec:.1f} '
           f'steps/s; {samples_per_sec:.1f} samples/s')
+
+    if time_step_only:
+        return
 
     data = ingest.load_state('/tmp/x86.pickle')
 
@@ -219,5 +240,12 @@ def run_train() -> None:
     print('train time:', train_end - train_start)
 
 
+def main():
+    parser = optparse.OptionParser()
+    parser.add_option('--time-step-only', action='store_true', default=False,
+                      help='Just time a training step, do not train.')
+    opts, args = parser.parse_args()
+    run_train(opts.time_step_only)
+
 if __name__ == '__main__':
-    run_train()
+    main()
