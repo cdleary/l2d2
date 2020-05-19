@@ -1,2 +1,3 @@
-*.swp
+*.sw[opqrstuv]
 __pycache__
+.mypy_cache

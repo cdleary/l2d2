@@ -1,12 +1,14 @@
 import collections
+import datetime
 import math
 import csv
 import os
 import random
 import struct
 import sys
-from datetime import datetime
 from typing import List, Tuple
+
+import numpy as np
 
 import jax
 from jax.experimental import optimizers
@@ -22,11 +24,11 @@ INPUT_FLOATS_PER_BYTE = 15
 INPUT_FLOATS = (        # Bytes are turned into a number of floats.
     BYTES * INPUT_FLOATS_PER_BYTE)
 CLASSES = BYTES+1       # Length categories; 0 for "not a valid instruction".
-INPUT_LEN = 256         # Vector dimension input to recurrent structure.
+INPUT_LEN = 512         # Vector dimension input to recurrent structure.
 CARRY_LEN = (           # Vector dimension carried to next recurrent structure.
     INPUT_LEN-INPUT_FLOATS_PER_BYTE)
 EVAL_MINIBATCHES = 1024 # Number of minibatches for during-training eval.
-STEP_SIZE=1e-3          # Learning rate.
+STEP_SIZE = 1e-5        # Learning rate.
 FC = 1024               # Fully connected neurons to use on last hidden output.
 MINIBATCH_SIZE = 32     # Number of samples per minibatch.
 
@@ -63,7 +65,16 @@ def bit(b: int, index: int) -> int:
     return (b >> index) & 1
 
 
-def value_byte_to_floats(b):
+def value_byte_to_floats(b: int) -> np.array:
+    """Constructs a vector that characterizes a byte's content in various ways.
+
+    We create:
+
+        [byte, hi_nibble, lo_nibble, crumb0, crumb1, crumb2, crumb3] +
+        [bit0, bit1, ..., bit8]
+
+    Where the bits contents are placed in a float via byte_to_float.
+    """
     pieces = [
         byte_to_float(b),               # value for whole byte
         byte_to_float((b >> 4) & 0xf),  # upper nibble
@@ -75,13 +86,16 @@ def value_byte_to_floats(b):
     ]
     for i in range(8):
         pieces.append(byte_to_float(bit(b, i)))
-    return jnp.array(pieces)
+    return np.array(pieces)
 
 
-def value_to_sample(bs):
-    return jnp.concatenate(tuple(value_byte_to_floats(b) for b in bs))
+def value_to_sample(bs: List[int]) -> np.array:
+    """Creates an input vector sample from the sequence of bytes."""
+    assert len(bs) == BYTES
+    return np.concatenate(tuple(value_byte_to_floats(b) for b in bs))
 
 
+@jax.jit
 def loss(p, sample, target):
     assert sample.shape == (MINIBATCH_SIZE, INPUT_FLOATS)
     assert target.shape == (MINIBATCH_SIZE,), target.shape
@@ -90,8 +104,8 @@ def loss(p, sample, target):
     return jnp.sum((labels - predictions)**2)
 
 
-opt_init, opt_update, get_params = optimizers.adagrad(step_size=STEP_SIZE)
-#opt_init, opt_update, get_params = optimizers.sgd(step_size=STEP_SIZE)
+#opt_init, opt_update, get_params = optimizers.adagrad(step_size=STEP_SIZE)
+opt_init, opt_update, get_params = optimizers.sgd(step_size=STEP_SIZE)
 
 
 @jax.jit
@@ -103,83 +117,51 @@ def train_step(i, opt_state, sample, target):
     return opt_update(i, g, opt_state)
 
 
-def read_records(limit=False):
-    d = []
-    with open(os.path.expanduser('~/x86_3B.csv')) as f:
-        reader = csv.reader(f, delimiter=';')
-        for row in reader:
-            d.append((int(row[0].replace(' ', ''), 16), int(row[1])))
-            if limit and len(d) == MINIBATCH_SIZE:
-                break
-    print(f'records read: {len(d):,}')
-    return d
-
-
 def run_eval(p, eval_minibatches: Tuple):
+    """Runs evaluation step on the given eval_minibatches with parameters p."""
     confusion = collections.defaultdict(lambda: 0)
     for samples, wants in eval_minibatches:
-        #print('samples:', samples)
-        #print('  wants:', wants)
         probs = step(samples_to_input(samples), p)
-        #print('probs:', probs)
         gots = probs.argmax(axis=-1)
         for i in range(MINIBATCH_SIZE):
             confusion[(wants[i], gots[i].item())] += 1
 
-
+    # Print out the confusion matrix.
     for want in range(CLASSES):
         print('want', want, ': ', end='')
         for got in range(CLASSES):
             print('{:3d}'.format(confusion[(want, got)]), end=' ')
         print()
 
-    accuracy = sum(confusion[(i, i)] for i in range(CLASSES)) / float(sum(confusion.values())) * 100.0
+    # Print out summary accuracy statistic(s).
+    accuracy = sum(
+            confusion[(i, i)]
+            for i in range(CLASSES)) / float(sum(confusion.values())) * 100.0
     print(f'accuracy: {accuracy:.2f}%')
 
 
-def random_minibatch_iter(d, count):
-    for _ in range(count):
-        sampled = random.sample(d, MINIBATCH_SIZE)
-        samples = jnp.array([value_to_sample(s) for s, _ in sampled])
-        targets = jnp.array([t for _, t in sampled])
-        yield samples, targets
-
-
-def minibatch_iter(d):
-    samples = []
-    targets = []
-    for in_bytes, target in d:
-        samples.append(value_to_sample(in_bytes))
-        targets.append(target)
-        if len(samples) == MINIBATCH_SIZE:
-            yield jnp.array(samples), jnp.array(targets)
-            samples.clear()
-            targets.clear()
-    if samples:
-        yield jnp.array(samples), jnp.array(targets)
-
-
-def time_train_step(opt_state):
-    fake_sample = jnp.zeros((MINIBATCH_SIZE, INPUT_FLOATS), dtype='float32')
-    fake_target = jnp.zeros((MINIBATCH_SIZE,), dtype='int8')
+def time_train_step(opt_state) -> datetime.timedelta:
+    """Times a single training step after warmup."""
+    fake_sample = np.zeros((MINIBATCH_SIZE, INPUT_FLOATS), dtype='float32')
+    fake_target = np.zeros((MINIBATCH_SIZE,), dtype='int8')
 
     # Warmup.
     train_step(0, opt_state, fake_sample, fake_target)
 
     # Timed.
-    start = datetime.now()
+    start = datetime.datetime.now()
     train_step(0, opt_state, fake_sample, fake_target)
-    end = datetime.now()
+    end = datetime.datetime.now()
     return end - start
 
 
-def samples_to_input(samples: List[List[int]]):
-    return jnp.array([value_to_sample(sample) for sample in samples])
+def samples_to_input(samples: List[List[int]]) -> np.array:
+    """Converts a sequence of bytes-samples into a minibatch array."""
+    return np.array([value_to_sample(sample) for sample in samples])
 
 
-def run_train():
-    train_start = datetime.now()
-
+def run_train() -> None:
+    """Runs a training routine."""
     # Initialize parameters.
     key = rng.PRNGKey(0)
     p = [(rng.normal(key, (INPUT_LEN, CARRY_LEN)),
@@ -191,40 +173,51 @@ def run_train():
     # Package up in optimizer state.
     opt_state = opt_init(p)
 
-    #step_time = time_train_step(opt_state)
-    #steps_per_sec = 1.0/step_time.total_seconds()
-    #samples_per_sec = steps_per_sec * MINIBATCH_SIZE
-    #print(f'step time approximately: {step_time}; {steps_per_sec:.1f} steps/s; {samples_per_sec:.1f} samples/s')
+    step_time = time_train_step(opt_state)
+    steps_per_sec = 1.0/step_time.total_seconds()
+    samples_per_sec = steps_per_sec * MINIBATCH_SIZE
+    print(f'step time approximately: {step_time}; {steps_per_sec:.1f} '
+          f'steps/s; {samples_per_sec:.1f} samples/s')
 
     data = ingest.load_state('/tmp/x86.pickle')
 
-    eval_sampler = ingest_sampler.sample_minibatches(data, MINIBATCH_SIZE, BYTES, zeros_ok=False, replacement=True)
+    eval_sampler = ingest_sampler.sample_minibatches(
+            data, MINIBATCH_SIZE, BYTES, zeros_ok=False, replacement=True)
+    eval_sample_start = datetime.datetime.now()
     eval_data = tuple(next(eval_sampler) for _ in range(EVAL_MINIBATCHES))
+    eval_sample_end = datetime.datetime.now()
+    print('sampling time per minibatch: {:.3f} ms'.format(
+          (eval_sample_end-eval_sample_start).total_seconds()
+            / EVAL_MINIBATCHES * 1e3))
 
-    sampler = ingest_sampler.sample_minibatches(data, MINIBATCH_SIZE, BYTES, zeros_ok=False, replacement=False)
+
+    sampler = ingest_sampler.sample_minibatches(
+            data, MINIBATCH_SIZE, BYTES, zeros_ok=False, replacement=False)
+
+    train_start = datetime.datetime.now()
 
     for epoch in range(1):
         print('... epoch start', epoch)
         for i, minibatch in enumerate(sampler):
             if i % 64 == 63:
-                now = datetime.now()
-                print('... epoch', epoch, 'step', i, '@', now, '@ {:.2f} step/s'.format(i / (now-train_start).total_seconds()))
+                now = datetime.datetime.now()
+                print('... epoch', epoch, 'step', i, '@', now,
+                      '@ {:.2f} step/s'.format(
+                          i / (now-train_start).total_seconds()))
                 run_eval(get_params(opt_state), eval_data)
             samples, targets = minibatch
             assert len(targets) == MINIBATCH_SIZE, targets
             assert len(samples) == MINIBATCH_SIZE
             samples = samples_to_input(samples)
-            opt_state = train_step(i, opt_state, samples, jnp.array(targets, dtype='uint8'))
+            opt_state = train_step(i, opt_state, samples,
+                                   np.array(targets, dtype='uint8'))
         p = get_params(opt_state)
         run_eval(p, eval_data)
 
-    train_end = datetime.now()
+    train_end = datetime.datetime.now()
 
     print('train time:', train_end - train_start)
 
 
-def main():
-    run_train()
-
 if __name__ == '__main__':
-    main()
+    run_train()

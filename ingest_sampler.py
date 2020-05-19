@@ -34,7 +34,8 @@ def _sample_instruction(node: List, replacement: bool) -> Optional[Tuple[List[in
             return [index], 0
 
 
-def sample_instruction(state: State, zeros_ok: bool, replacement: bool) -> Optional[Tuple[List[int], int]]:
+def sample_instruction(state: State, zeros_ok: bool,
+                       replacement: bool) -> Optional[Tuple[List[int], int]]:
     while True:
         result = _sample_instruction(state.data, replacement=replacement)
         if not zeros_ok and result is not None and result[1] == 0:
