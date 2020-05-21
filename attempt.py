@@ -12,7 +12,6 @@ from jax.experimental import optimizers
 from jax import numpy as jnp
 from jax import random as rng
 
-import float_helpers
 import ingest
 import ingest_sampler
 
@@ -48,49 +47,6 @@ def step(xs, p):
     return jax.nn.softmax(z @ p[-1])
 
 
-def byte_to_float(x):
-    assert x & 0xff == x, x
-    return float_helpers.parts2float((0, float_helpers.BIAS, x << (23-8)))
-
-
-def crumb(b: int, index: int) -> int:
-    return (b >> (2 * index)) & 3
-
-
-def bit(b: int, index: int) -> int:
-    return (b >> index) & 1
-
-
-def value_byte_to_floats(b: int) -> np.array:
-    """Constructs a vector that characterizes a byte's content in various ways.
-
-    We create:
-
-        [byte, hi_nibble, lo_nibble, crumb0, crumb1, crumb2, crumb3] +
-        [bit0, bit1, ..., bit8]
-
-    Where the bits contents are placed in a float via byte_to_float.
-    """
-    pieces = [
-        byte_to_float(b),               # value for whole byte
-        byte_to_float((b >> 4) & 0xf),  # upper nibble
-        byte_to_float(b & 0x0f),        # lower nibble
-        byte_to_float(crumb(b, 0)),
-        byte_to_float(crumb(b, 1)),
-        byte_to_float(crumb(b, 2)),
-        byte_to_float(crumb(b, 3)),
-    ]
-    for i in range(8):
-        pieces.append(byte_to_float(bit(b, i)))
-    return np.array(pieces)
-
-
-def value_to_sample(bs: List[int]) -> np.array:
-    """Creates an input vector sample from the sequence of bytes."""
-    assert len(bs) == BYTES
-    return np.concatenate(tuple(value_byte_to_floats(b) for b in bs))
-
-
 @jax.jit
 def loss(p, sample, target):
     assert sample.shape == (MINIBATCH_SIZE, INPUT_FLOATS)
@@ -117,7 +73,7 @@ def run_eval(p, eval_minibatches: Tuple):
     """Runs evaluation step on the given eval_minibatches with parameters p."""
     confusion = collections.defaultdict(lambda: 0)
     for samples, wants in eval_minibatches:
-        probs = step(samples_to_input(samples), p)
+        probs = step(preprocess.samples_to_input(samples), p)
         gots = probs.argmax(axis=-1)
         for i in range(MINIBATCH_SIZE):
             confusion[(wants[i], gots[i].item())] += 1
@@ -163,11 +119,6 @@ def time_train_step(opt_state) -> datetime.timedelta:
     return fwd_time, step_time
 
 
-def samples_to_input(samples: List[List[int]]) -> np.array:
-    """Converts a sequence of bytes-samples into a minibatch array."""
-    return np.array([value_to_sample(sample) for sample in samples])
-
-
 @jax.jit
 def init_params(key):
     p = [(rng.normal(key, (INPUT_LEN, CARRY_LEN)),
@@ -211,7 +162,6 @@ def run_train(time_step_only) -> None:
           (eval_sample_end-eval_sample_start).total_seconds()
             / EVAL_MINIBATCHES * 1e3))
 
-
     sampler = ingest_sampler.sample_minibatches(
             data, MINIBATCH_SIZE, BYTES, zeros_ok=False, replacement=False)
 
@@ -229,7 +179,7 @@ def run_train(time_step_only) -> None:
             samples, targets = minibatch
             assert len(targets) == MINIBATCH_SIZE, targets
             assert len(samples) == MINIBATCH_SIZE
-            samples = samples_to_input(samples)
+            samples = preprocess.samples_to_input(samples)
             opt_state = train_step(i, opt_state, samples,
                                    np.array(targets, dtype='uint8'))
         p = get_params(opt_state)
