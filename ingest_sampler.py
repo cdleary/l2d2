@@ -1,7 +1,7 @@
 import random
 from typing import List, Optional, Tuple
 
-from ingest import State
+from ingest import State, Terminal
 
 
 _SAMPLED_SENTINEL = object()
@@ -20,10 +20,10 @@ def _sample_instruction(node: List, replacement: bool) -> Optional[Tuple[List[in
             # a quick hack. Better would be to condense the valid indices and
             # select among those, then map them back.
             continue
-        elif isinstance(sub_node, int):
+        elif isinstance(sub_node, Terminal):
             if not replacement:
                 node[index] = _SAMPLED_SENTINEL
-            return [index], sub_node
+            return [index], sub_node.length
         elif isinstance(sub_node, list):
             result = _sample_instruction(sub_node, replacement)
             if result is None:

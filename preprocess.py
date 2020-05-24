@@ -53,5 +53,3 @@ def value_to_sample(bs: List[int]) -> np.array:
 def samples_to_input(samples: List[List[int]]) -> np.array:
     """Converts a sequence of bytes-samples into a minibatch array."""
     return np.array([value_to_sample(sample) for sample in samples])
-
-
