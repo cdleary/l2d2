@@ -14,8 +14,9 @@ from jax import random as rng
 
 import ingest
 import ingest_sampler
+import preprocess
+from preprocess import BYTES
 
-BYTES = 7               # Input byte count (with instruction data).
 INPUT_FLOATS_PER_BYTE = 15
 INPUT_FLOATS = (        # Bytes are turned into a number of floats.
     BYTES * INPUT_FLOATS_PER_BYTE)

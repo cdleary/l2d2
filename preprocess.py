@@ -1,4 +1,10 @@
+from typing import List
+
+import numpy as np
+
 import float_helpers
+
+BYTES = 7               # Input byte count (with instruction data).
 
 
 def byte_to_float(x):
