@@ -1,0 +1,13 @@
+[package]
+name = "xtrie"
+version = "0.1.0"
+authors = ["Chris Leary <cdleary@gmail.com>"]
+edition = "2018"
+
+[lib]
+name = "xtrie"
+crate-type = ["cdylib"]
+
+[dependencies.pyo3]
+version = "0.10.1"
+features = ["extension-module"]
