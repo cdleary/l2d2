@@ -4,8 +4,6 @@ import numpy as np
 
 import float_helpers
 
-BYTES = 7               # Input byte count (with instruction data).
-
 
 def byte_to_float(x):
     assert x & 0xff == x, x
@@ -46,7 +44,6 @@ def value_byte_to_floats(b: int) -> np.array:
 
 def value_to_sample(bs: List[int]) -> np.array:
     """Creates an input vector sample from the sequence of bytes."""
-    assert len(bs) == BYTES
     return np.concatenate(tuple(value_byte_to_floats(b) for b in bs))
 
 

@@ -15,17 +15,18 @@ from jax import random as rng
 import ingest
 import ingest_sampler
 import preprocess
-from preprocess import BYTES
 
-INPUT_FLOATS_PER_BYTE = 15
+
+INPUT_FLOATS_PER_BYTE = len(preprocess.value_byte_to_floats(0))
+BYTES = 7               # Input byte count (with instruction data).
 INPUT_FLOATS = (        # Bytes are turned into a number of floats.
     BYTES * INPUT_FLOATS_PER_BYTE)
 CLASSES = BYTES+1       # Length categories; 0 for "not a valid instruction".
-INPUT_LEN = 256         # Vector dimension input to recurrent structure.
+INPUT_LEN = 512         # Vector dimension input to recurrent structure.
 CARRY_LEN = INPUT_LEN   # Vector dimension carried to next recurrent structure.
 EVAL_MINIBATCHES = 1024 # Number of minibatches for during-training eval.
-STEP_SIZE = 1e-5        # Learning rate.
-FC = 1024               # Fully connected neurons to use on last hidden output.
+STEP_SIZE = 1e-6        # Learning rate.
+FC = 4096               # Fully connected neurons to use on last hidden output.
 
 
 @jax.jit
@@ -78,7 +79,8 @@ def run_eval(p, eval_minibatches: Tuple):
     for samples, wants in eval_minibatches:
         probs = step(preprocess.samples_to_input(samples), p)
         gots = probs.argmax(axis=-1)
-        for i in range(samples.shape[0]):
+        assert isinstance(samples, list)
+        for i in range(len(samples)):
             confusion[(wants[i], gots[i].item())] += 1
 
     # Print out the confusion matrix.
@@ -132,7 +134,7 @@ def init_params(key):
     return p
 
 
-def run_train(batch_size: int, time_step_only: bool) -> None:
+def run_train(epochs: int, batch_size: int, time_step_only: bool) -> None:
     """Runs a training routine."""
     # Initialize parameters.
     key = rng.PRNGKey(0)
@@ -170,10 +172,10 @@ def run_train(batch_size: int, time_step_only: bool) -> None:
 
     train_start = datetime.datetime.now()
 
-    for epoch in range(1):
+    for epoch in range(epochs):
         print('... epoch start', epoch)
         for i, minibatch in enumerate(sampler):
-            if i % 64 == 63:
+            if i % (16 * batch_size) == (16 * batch_size - 1):
                 now = datetime.datetime.now()
                 print('... epoch', epoch, 'step', i, '@', now,
                       '@ {:.2f} step/s'.format(
@@ -197,10 +199,12 @@ def main():
     parser = optparse.OptionParser()
     parser.add_option('--time-step-only', action='store_true', default=False,
                       help='Just time a training step, do not train.')
-    parser.add_option('--batch-size', type=int, default=256,
+    parser.add_option('--batch-size', type=int, default=8,
                       help='minibatch size')
+    parser.add_option('--epochs', type=int, default=8,
+                      help='number of iterations through the training data before completing')
     opts, args = parser.parse_args()
-    run_train(opts.batch_size, opts.time_step_only)
+    run_train(opts.epochs, opts.batch_size, opts.time_step_only)
 
 
 if __name__ == '__main__':
