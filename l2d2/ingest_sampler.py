@@ -1,7 +1,7 @@
 import random
 from typing import List, Optional, Tuple
 
-from ingest import State, Terminal
+import xtrie
 
 
 _SAMPLED_SENTINEL = object()
@@ -20,7 +20,7 @@ def _sample_instruction(node: List, replacement: bool) -> Optional[Tuple[List[in
             # a quick hack. Better would be to condense the valid indices and
             # select among those, then map them back.
             continue
-        elif isinstance(sub_node, Terminal):
+        elif isinstance(sub_node, xtrie.Terminal):
             if not replacement:
                 node[index] = _SAMPLED_SENTINEL
             return [index], sub_node.length
@@ -39,7 +39,7 @@ def _sample_instruction(node: List, replacement: bool) -> Optional[Tuple[List[in
             return [index], 0
 
 
-def sample_instruction(state: State, zeros_ok: bool,
+def sample_instruction(state: xtrie.XTrie, zeros_ok: bool,
                        replacement: bool) -> Optional[Tuple[List[int], int]]:
     while True:
         result = _sample_instruction(state.data, replacement=replacement)
@@ -48,7 +48,7 @@ def sample_instruction(state: State, zeros_ok: bool,
         return result
 
 
-def sample_minibatches(state: State, minibatch_size: int, length: int,
+def sample_minibatches(state: xtrie.XTrie, minibatch_size: int, length: int,
                        zeros_ok: bool, replacement: bool):
     sampled = []
     targets = []

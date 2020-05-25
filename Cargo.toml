@@ -8,6 +8,10 @@ edition = "2018"
 name = "xtrie"
 crate-type = ["cdylib"]
 
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+bincode = { version = "1.2.1" }
+
 [dependencies.pyo3]
 version = "0.10.1"
 features = ["extension-module"]

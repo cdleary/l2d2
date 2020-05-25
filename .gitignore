@@ -1,3 +1,8 @@
 *.sw[mnopqrstuv]
 __pycache__
 .mypy_cache
+target/
+l2d2.egg-info/
+*.lprof
+Cargo.lock
+xtrie.cpython-*.so
