@@ -1,16 +1,20 @@
 use std::collections::HashSet;
 use std::fs::File;
 
+use rand::Rng;
+use rand::thread_rng;
+use rand::seq::SliceRandom;
 use serde::{Serialize, Deserialize};
 
 use pyo3::prelude::*;
 use pyo3::wrap_pyfunction;
 use pyo3::{Python, PyErr};
 use pyo3::exceptions;
+use pyo3::types::PyBytes;
 
 // Represents a leaf in the x86 assembly trie; having a cached length (in
 // bytes) and the assembly text associated with its byte sequence.
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 struct Terminal {
     length: u8,
     asm: String,
@@ -18,14 +22,14 @@ struct Terminal {
 
 // Member of the trie; for any given byte we can have a node that leads to more
 // terminals, a terminal, or not have any entry yet.
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 enum TrieElem {
     Interior(Vec<TrieElem>),
     Terminal(Terminal),
     Nothing,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 struct Trie {
     root: Vec<TrieElem>,
     total: u64,
@@ -51,6 +55,10 @@ fn mk_empty_interior() -> Vec<TrieElem> {
         result.push(TrieElem::Nothing);
     }
     return result;
+}
+
+fn all_nothing(v: &Vec<TrieElem>) -> bool {
+    v.iter().all(|t| if let TrieElem::Nothing = t { true } else { false })
 }
 
 fn hexbytes(bytes: &[u8]) -> String {
@@ -110,6 +118,38 @@ fn resolver<'a>(node: &'a Vec<TrieElem>, bytes: &[u8]) -> Option<&'a Terminal> {
     }
 }
 
+// Randomly selects a terminal from within "node".
+//
+// Returns the terminal, if present, and whether this node is now empty, since
+// we sampled without replacement. If the node is empty, the parent node should
+// make a note of it to avoid recursing into it in future samplings.
+fn sampler(node: &mut Vec<TrieElem>, mut current: Vec<u8>) -> (Option<Vec<u8>>, bool) {
+    let mut present: Vec<usize> = Vec::with_capacity(node.len());
+    for (i, elem) in node.iter().enumerate() {
+        match elem {
+            TrieElem::Nothing => (),
+            _ => present.push(i),
+        }
+    }
+    assert!(!present.is_empty());
+
+    let mut rng = thread_rng();
+    let index: usize = *present.choose(&mut rng).unwrap();
+    assert!(index <= 255);
+    current.push(index as u8);
+    let (result, sub_empty) = match &mut node[index] {
+        TrieElem::Nothing => panic!("Should have filtered out Nothing indices."),
+        TrieElem::Terminal(_) => {
+            (Some(current), true)
+        }
+        TrieElem::Interior(n) => sampler(n, current),
+    };
+    if sub_empty {
+        node[index] = TrieElem::Nothing;
+    }
+    (result, present.len() == 1 && sub_empty)
+}
+
 #[pymethods]
 impl XTrie {
     #[getter]
@@ -120,6 +160,10 @@ impl XTrie {
     #[getter]
     fn get_binary_count(&self) -> PyResult<usize> {
         Ok(self.trie.binaries.len())
+    }
+
+    pub fn clone(&self) -> PyResult<XTrie> {
+        Ok(XTrie{trie: self.trie.clone()})
     }
 
     // Returns true iff the key was freshly inserted.
@@ -150,6 +194,10 @@ impl XTrie {
         }
     }
 
+    pub fn empty(&self) -> PyResult<bool> {
+        Ok(all_nothing(&self.trie.root))
+    }
+
     pub fn histo(&self) -> PyResult<Vec<i32>> {
         let mut histo = vec![];
         let mut add_to_histo = |t: &Terminal| {
@@ -160,6 +208,46 @@ impl XTrie {
         };
         traverse(&self.trie.root, &mut add_to_histo);
         Ok(histo)
+    }
+
+    // "length" indicates the length to which we should pad the sampled bytes
+    // with random garbage. If we padded it with zeros then the length of the
+    // sample would be easy to determine by inspection of where the zeros
+    // start!
+    pub fn sample_nr<'p>(&mut self, py: Python<'p>, length: Option<u8>) -> PyResult<Option<(&'p PyBytes, u8)>> {
+        if all_nothing(&self.trie.root) {
+            return Ok(None)
+        }
+        let (result, _) = sampler(&mut self.trie.root, vec![]);
+        match result {
+            Some(mut v) => {
+                let orig_len = v.len();
+                if let Some(len) = length {
+                    let mut rng = thread_rng();
+                    while v.len() < len as usize {
+                        let b: u8 = rng.gen();
+                        v.push(b)
+                    }
+                }
+                Ok(Some((PyBytes::new(py, &v), orig_len as u8)))
+            }
+            None => Ok(None),
+        }
+    }
+
+    pub fn sample_nr_mb<'p>(&mut self, py: Python<'p>, minibatch_size: u8, length: u8) -> PyResult<(Vec<&'p PyBytes>, Vec<u8>)> {
+        let mut bytes = vec![];
+        let mut sizes = vec![];
+        for _ in 0..minibatch_size {
+            match self.sample_nr(py, Some(length)).unwrap() {
+                Some((bs, len)) => { bytes.push(bs); sizes.push(len) },
+                None => {
+                    bytes.push(PyBytes::new(py, &vec![0u8; length as usize]));
+                    sizes.push(0);
+                }
+            }
+        }
+        Ok((bytes, sizes))
     }
 }
 

@@ -13,12 +13,12 @@ from jax import numpy as jnp
 from jax import random as rng
 
 import ingest
-import ingest_sampler
 import preprocess
+import xtrie
 
 
 INPUT_FLOATS_PER_BYTE = len(preprocess.value_byte_to_floats(0))
-BYTES = 7               # Input byte count (with instruction data).
+BYTES = 15              # Input byte count (with instruction data).
 INPUT_FLOATS = (        # Bytes are turned into a number of floats.
     BYTES * INPUT_FLOATS_PER_BYTE)
 CLASSES = BYTES+1       # Length categories; 0 for "not a valid instruction".
@@ -134,6 +134,17 @@ def init_params(key):
     return p
 
 
+def _get_eval_data(data: xtrie.XTrie, batch_size: int) -> Tuple:
+    data = data.clone()
+    eval_sample_start = datetime.datetime.now()
+    eval_data = tuple(data.sample_nr_mb(batch_size, BYTES) for _ in range(EVAL_MINIBATCHES))
+    eval_sample_end = datetime.datetime.now()
+    print('sampling time per minibatch: {:.3f} us'.format(
+          (eval_sample_end-eval_sample_start).total_seconds()
+            / EVAL_MINIBATCHES * 1e6))
+    return eval_data
+
+
 def run_train(epochs: int, batch_size: int, time_step_only: bool) -> None:
     """Runs a training routine."""
     # Initialize parameters.
@@ -156,37 +167,31 @@ def run_train(epochs: int, batch_size: int, time_step_only: bool) -> None:
     if time_step_only:
         return
 
-    data = ingest.load_state('/tmp/x86.pickle')
+    data = ingest.load_state('/tmp/x86.state')
 
-    eval_sampler = ingest_sampler.sample_minibatches(
-            data, batch_size, BYTES, zeros_ok=False, replacement=True)
-    eval_sample_start = datetime.datetime.now()
-    eval_data = tuple(next(eval_sampler) for _ in range(EVAL_MINIBATCHES))
-    eval_sample_end = datetime.datetime.now()
-    print('sampling time per minibatch: {:.3f} ms'.format(
-          (eval_sample_end-eval_sample_start).total_seconds()
-            / EVAL_MINIBATCHES * 1e3))
-
-    sampler = ingest_sampler.sample_minibatches(
-            data, batch_size, BYTES, zeros_ok=False, replacement=False)
+    eval_data = _get_eval_data(data, batch_size)
 
     train_start = datetime.datetime.now()
 
     for epoch in range(epochs):
         print('... epoch start', epoch)
-        for i, minibatch in enumerate(sampler):
-            if i % (16 * batch_size) == (16 * batch_size - 1):
+        stepno = 0
+        while not data.empty():
+            if stepno % (16 * batch_size) == (16 * batch_size - 1):
                 now = datetime.datetime.now()
-                print('... epoch', epoch, 'step', i, '@', now,
+                print('... epoch', epoch, 'step', stepno, '@', now,
                       '@ {:.2f} step/s'.format(
-                          i / (now-train_start).total_seconds()))
+                          stepno / (now-train_start).total_seconds()))
                 run_eval(get_params(opt_state), eval_data)
-            samples, targets = minibatch
+            samples, targets = data.sample_nr_mb(batch_size, BYTES)
             assert len(targets) == batch_size, targets
             assert len(samples) == batch_size
             samples = preprocess.samples_to_input(samples)
-            opt_state = train_step(i, opt_state, samples,
+            opt_state = train_step(stepno, opt_state, samples,
                                    np.array(targets, dtype='uint8'))
+            stepno += 1
+
+        # End of epoch!
         p = get_params(opt_state)
         run_eval(p, eval_data)
 
