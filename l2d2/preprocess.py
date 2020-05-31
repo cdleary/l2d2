@@ -6,7 +6,7 @@ import numpy as np
 import float_helpers
 
 
-def byte_to_float(x):
+def byte_to_float(x) -> float:
     assert x & 0xff == x, x
     return float_helpers.parts2float((0, float_helpers.BIAS, x << (23-8)))
 
@@ -52,7 +52,7 @@ def value_byte_to_floats(b: int, opts: ValueOpts) -> np.array:
     if opts.bits:
         for i in range(8):
             pieces.append(byte_to_float(bit(b, i)))
-    return np.array(pieces)
+    return np.array(pieces, dtype='float32')
 
 
 def value_to_sample(bs: List[int], opts: ValueOpts) -> np.array:
@@ -62,4 +62,4 @@ def value_to_sample(bs: List[int], opts: ValueOpts) -> np.array:
 
 def samples_to_input(samples: List[List[int]], opts: ValueOpts) -> np.array:
     """Converts a sequence of bytes-samples into a minibatch array."""
-    return np.array([value_to_sample(sample, opts) for sample in samples])
+    return np.array([value_to_sample(sample, opts) for sample in samples], dtype='float32')

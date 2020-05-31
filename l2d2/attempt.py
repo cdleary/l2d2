@@ -28,9 +28,8 @@ INPUT_FLOATS = (        # Bytes are turned into a number of floats.
     BYTES * INPUT_FLOATS_PER_BYTE)
 CLASSES = BYTES+1       # Length categories; 0 for "not a valid instruction".
 EVAL_MINIBATCHES = 1024 # Number of minibatches for during-training eval.
-STEP_SIZE = 1e-6        # Learning rate.
+STEP_SIZE = 1e-4        # Learning rate.
 FC = 4096               # Fully connected neurons to use on last hidden output.
-TRAIN_STEPS_PER_EVAL = 4096
 
 
 @jax.partial(jax.jit, static_argnums=2)
@@ -77,17 +76,17 @@ def train_step(i, opt_state, sample, target, carry_len: int):
     return opt_update(i, g, opt_state)
 
 
-def run_eval(p, eval_minibatches: Tuple, carry_len: int):
+def run_eval(p, eval_data: Tuple[np.array, np.array], carry_len: int):
     """Runs evaluation step on the given eval_minibatches with parameters p."""
     print('... running eval')
     sys.stdout.flush()
     confusion = collections.defaultdict(lambda: 0)
-    for samples, wants in eval_minibatches:
-        probs = step(preprocess.samples_to_input(samples, VALUE_OPTS), p, carry_len)
-        gots = probs.argmax(axis=-1)
-        assert isinstance(samples, list)
-        for i in range(len(samples)):
-            confusion[(wants[i], gots[i].item())] += 1
+    samples, wants = eval_data
+    probs = step(preprocess.samples_to_input(samples, VALUE_OPTS), p, carry_len)
+    gots = probs.argmax(axis=-1)
+    assert isinstance(samples, list)
+    for i in range(len(samples)):
+        confusion[(wants[i], gots[i].item())] += 1
 
     # Print out the confusion matrix.
     for want in range(CLASSES):
@@ -133,26 +132,30 @@ def time_train_step(batch_size: int, carry_len: int, opt_state) -> datetime.time
 
 @jax.partial(jax.jit, static_argnums=1)
 def init_params(key, carry_len: int):
-    p = [(rng.normal(key, (carry_len, carry_len)),
-          rng.normal(key, (carry_len,)))
+    p = [(rng.normal(key, (carry_len, carry_len), dtype='float32'),
+          rng.normal(key, (carry_len,), dtype='float32'))
          for _ in range(BYTES)]
     p.append((
-        rng.normal(key, (carry_len, FC)),
-        rng.normal(key, (FC,)),
+        rng.normal(key, (carry_len, FC), dtype='float32'),
+        rng.normal(key, (FC,), dtype='float32'),
     ))
-    p.append(rng.normal(key, (FC, CLASSES)))
+    p.append(rng.normal(key, (FC, CLASSES), dtype='float32'))
     return p
 
 
-def _get_eval_data(data: xtrie.XTrie, batch_size: int) -> Tuple:
+def _get_eval_data(data: xtrie.XTrie, batch_size: int) -> Tuple[np.array, np.array]:
     data = data.clone()
     eval_sample_start = datetime.datetime.now()
-    eval_data = tuple(data.sample_nr_mb(batch_size, BYTES) for _ in range(EVAL_MINIBATCHES))
+    inputs, targets = [], []
+    for _ in range(EVAL_MINIBATCHES):
+        bs, ts = data.sample_nr_mb(batch_size, BYTES)
+        inputs += [np.frombuffer(b, dtype='uint8') for b in bs]
+        targets += ts
     eval_sample_end = datetime.datetime.now()
     print('sampling time per minibatch: {:.3f} us'.format(
           (eval_sample_end-eval_sample_start).total_seconds()
             / EVAL_MINIBATCHES * 1e6))
-    return eval_data
+    return np.concatenate(inputs), np.array(targets, 'uint8')
 
 
 class SamplerThread(threading.Thread):
@@ -192,7 +195,7 @@ def scoped_time(annotation):
     print('...', annotation, 'done in', end-start)
 
 
-def _do_train(opt_state, eval_data, epochs: int, batch_size: int, carry_len: int, q: queue.Queue):
+def _do_train(opt_state, eval_data, epochs: int, batch_size: int, carry_len: int, train_steps_per_eval: int, q: queue.Queue):
     print('... starting training')
     train_start = datetime.datetime.now()
 
@@ -200,7 +203,7 @@ def _do_train(opt_state, eval_data, epochs: int, batch_size: int, carry_len: int
         print('... epoch start', epoch)
         stepno = 0
         while True:
-            if stepno % TRAIN_STEPS_PER_EVAL == TRAIN_STEPS_PER_EVAL - 1:
+            if stepno % train_steps_per_eval == train_steps_per_eval - 1:
                 now = datetime.datetime.now()
                 print()
                 print('... epoch', epoch, 'step', stepno, '@', now,
@@ -234,42 +237,42 @@ def _do_train(opt_state, eval_data, epochs: int, batch_size: int, carry_len: int
     print('... train time:', train_end - train_start)
 
 
-def run_train(epochs: int, batch_size: int, carry_len: int, time_step_only: bool) -> None:
+def run_train(opts) -> None:
     """Runs a training routine."""
     with scoped_time('initializing params'):
         # Initialize parameters.
         key = rng.PRNGKey(0)
-        p = init_params(key, carry_len)
+        p = init_params(key, opts.carry_len)
 
         # Package up in optimizer state.
         opt_state = opt_init(p)
 
-    fwd_time, step_time = time_train_step(batch_size, carry_len, opt_state)
+    fwd_time, step_time = time_train_step(opts.batch_size, opts.carry_len, opt_state)
     steps_per_sec = 1.0/step_time.total_seconds()
-    samples_per_sec = steps_per_sec * batch_size
+    samples_per_sec = steps_per_sec * opts.batch_size
     fwd_percent = fwd_time.total_seconds() / step_time.total_seconds() * 100.0
     fwd_us = int(fwd_time.total_seconds() * 1e6)
     step_us = int(step_time.total_seconds() * 1e6)
-    print(f'bs{batch_size:<8} fwd time approximately:  {fwd_us:6,} us ({fwd_percent:.2f}%)')
-    print(f'bs{batch_size:<8} step time approximately: {step_us:6,} us; {steps_per_sec:.1f} '
+    print(f'bs{opts.batch_size:<8} fwd time approximately:  {fwd_us:6,} us ({fwd_percent:.2f}%)')
+    print(f'bs{opts.batch_size:<8} step time approximately: {step_us:6,} us; {steps_per_sec:.1f} '
           f'steps/s; {samples_per_sec:.1f} samples/s')
 
-    if time_step_only:
+    if opts.time_step_only:
         return
 
     with scoped_time('loading x86 data'):
         data = ingest.load_state('/tmp/x86.state')
 
     with scoped_time('getting eval data'):
-        eval_data = _get_eval_data(data, batch_size)
+        eval_data = _get_eval_data(data, opts.batch_size)
 
     print('... starting sampler thread')
     q = queue.Queue(maxsize=32)
-    sampler_thread = SamplerThread(q, data, batch_size)
+    sampler_thread = SamplerThread(q, data, opts.batch_size)
     sampler_thread.start()
 
     try:
-        _do_train(opt_state, eval_data, epochs, batch_size, carry_len, q)
+        _do_train(opt_state, eval_data, opts.epochs, opts.batch_size, opts.carry_len, opts.steps_per_eval, q)
     except Exception as e:
         sampler_thread.cancel()
         sampler_thread.join()
@@ -286,8 +289,10 @@ def main():
                       help='vector length for recurrent state')
     parser.add_option('--epochs', type=int, default=8,
                       help='number of iterations through the training data before completing')
+    parser.add_option('--steps-per-eval', type=int, default=4096,
+                      help='Number of training steps to perform before doing an accuracy evaluation')
     opts, args = parser.parse_args()
-    run_train(opts.epochs, opts.batch_size, opts.carry_len, opts.time_step_only)
+    run_train(opts)
 
 
 if __name__ == '__main__':
