@@ -27,7 +27,7 @@ BYTES = 15              # Input byte count (with instruction data).
 INPUT_FLOATS = (        # Bytes are turned into a number of floats.
     BYTES * INPUT_FLOATS_PER_BYTE)
 CLASSES = BYTES+1       # Length categories; 0 for "not a valid instruction".
-EVAL_MINIBATCHES = 1024 # Number of minibatches for during-training eval.
+EVAL_MINIBATCHES = 32   # Number of minibatches for during-training eval.
 STEP_SIZE = 1e-4        # Learning rate.
 FC = 4096               # Fully connected neurons to use on last hidden output.
 
@@ -62,8 +62,8 @@ def loss(p, sample, target, carry_len: int):
     return jnp.sum((labels - predictions)**2)
 
 
-#opt_init, opt_update, get_params = optimizers.adagrad(step_size=STEP_SIZE)
-opt_init, opt_update, get_params = optimizers.sgd(step_size=STEP_SIZE)
+opt_init, opt_update, get_params = optimizers.adagrad(step_size=STEP_SIZE)
+#opt_init, opt_update, get_params = optimizers.sgd(step_size=STEP_SIZE)
 
 
 @jax.partial(jax.jit, static_argnums=4)
@@ -143,19 +143,19 @@ def init_params(key, carry_len: int):
     return p
 
 
-def _get_eval_data(data: xtrie.XTrie, batch_size: int) -> Tuple[np.array, np.array]:
+def _get_eval_data(data: xtrie.XTrie, batch_size: int) -> Tuple[List[bytes], List[int]]:
     data = data.clone()
     eval_sample_start = datetime.datetime.now()
     inputs, targets = [], []
     for _ in range(EVAL_MINIBATCHES):
         bs, ts = data.sample_nr_mb(batch_size, BYTES)
-        inputs += [np.frombuffer(b, dtype='uint8') for b in bs]
+        inputs += bs
         targets += ts
     eval_sample_end = datetime.datetime.now()
     print('sampling time per minibatch: {:.3f} us'.format(
           (eval_sample_end-eval_sample_start).total_seconds()
             / EVAL_MINIBATCHES * 1e6))
-    return np.concatenate(inputs), np.array(targets, 'uint8')
+    return inputs, targets
 
 
 class SamplerThread(threading.Thread):
@@ -195,7 +195,8 @@ def scoped_time(annotation):
     print('...', annotation, 'done in', end-start)
 
 
-def _do_train(opt_state, eval_data, epochs: int, batch_size: int, carry_len: int, train_steps_per_eval: int, q: queue.Queue):
+def _do_train(opt_state, eval_data, epochs: int, batch_size: int, carry_len: int,
+              train_steps_per_eval: int, q: queue.Queue):
     print('... starting training')
     train_start = datetime.datetime.now()
 
@@ -211,9 +212,12 @@ def _do_train(opt_state, eval_data, epochs: int, batch_size: int, carry_len: int
                           stepno / (now-train_start).total_seconds()))
                 sys.stdout.flush()
                 run_eval(get_params(opt_state), eval_data, carry_len)
+
+            # Grab item from the queue, see if it's a "terminate" sentinel.
             item = q.get()
             if item is None:
                 break  # Done with epoch.
+
             samples, targets = item
             assert len(targets) == batch_size, targets
             assert len(samples) == batch_size

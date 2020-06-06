@@ -55,11 +55,13 @@ def value_byte_to_floats(b: int, opts: ValueOpts) -> np.array:
     return np.array(pieces, dtype='float32')
 
 
-def value_to_sample(bs: List[int], opts: ValueOpts) -> np.array:
+def value_to_sample(bs: bytes, opts: ValueOpts) -> np.array:
     """Creates an input vector sample from the sequence of bytes."""
     return np.concatenate(tuple(value_byte_to_floats(b, opts) for b in bs))
 
 
-def samples_to_input(samples: List[List[int]], opts: ValueOpts) -> np.array:
-    """Converts a sequence of bytes-samples into a minibatch array."""
+def samples_to_input(samples: List[bytes], opts: ValueOpts) -> np.array:
+    """Converts a bytes-samples into a minibatch array."""
+    assert isinstance(samples, list), type(samples)
+    assert isinstance(samples[0], bytes), type(samples[0])
     return np.array([value_to_sample(sample, opts) for sample in samples], dtype='float32')

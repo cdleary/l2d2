@@ -36,7 +36,7 @@ def ingest_binary(state: xtrie.XTrie, path: str) -> None:
             continue
         addr = int(m.group('addr'), 16)
         mnemonic = m.group('mnemonic').strip() 
-        if not mnemonic or mnemonic.startswith('rex') or mnemonic == '(bad)':
+        if not mnemonic:
             continue
         # Sanitize symbols.
         mnemonic = _SYMBOL_RE.sub('', mnemonic)
@@ -44,6 +44,9 @@ def ingest_binary(state: xtrie.XTrie, path: str) -> None:
         mnemonic = _RELADDR_COMMENT_RE.sub('', mnemonic)
         # Sanitize relative jumps.
         mnemonic = _RELADDR_RE.sub(r'\1', mnemonic)
+        if not mnemonic or mnemonic.startswith('rex') or mnemonic.startswith('(bad)'):
+            continue
+        xtrie.parse_asm(mnemonic)
         bs = bytes(int(b, 16) for b in bs)
         state.insert(bs, mnemonic.strip())
 

@@ -76,6 +76,9 @@ def main():
         help='Limit on number of binaries to ingest; e.g. for testing')
     opts, parse = parser.parse_args()
 
+    known_opcodes = xtrie.get_opcode_count()
+    print(f'{known_opcodes} known opcodes')
+
     if os.path.exists(opts.trie_path) and opts.load:
         state = _do_load_state(opts)
     else:

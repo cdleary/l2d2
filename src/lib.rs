@@ -1,16 +1,18 @@
 use std::collections::HashSet;
 use std::fs::File;
 
-use rand::Rng;
-use rand::thread_rng;
 use rand::seq::SliceRandom;
-use serde::{Serialize, Deserialize};
+use rand::thread_rng;
+use rand::Rng;
+use serde::{Deserialize, Serialize};
 
-use pyo3::prelude::*;
-use pyo3::wrap_pyfunction;
-use pyo3::{Python, PyErr};
 use pyo3::exceptions;
+use pyo3::prelude::*;
 use pyo3::types::PyBytes;
+use pyo3::wrap_pyfunction;
+use pyo3::{PyErr, Python};
+
+mod asm_parser;
 
 // Represents a leaf in the x86 assembly trie; having a cached length (in
 // bytes) and the assembly text associated with its byte sequence.
@@ -40,13 +42,17 @@ struct Trie {
 
 impl Trie {
     fn new() -> Trie {
-        Trie{root: mk_empty_interior(), total: 0, binaries: HashSet::new()}
+        Trie {
+            root: mk_empty_interior(),
+            total: 0,
+            binaries: HashSet::new(),
+        }
     }
 }
 
 #[pyclass]
 struct XTrie {
-    trie: Trie
+    trie: Trie,
 }
 
 fn mk_empty_interior() -> Vec<TrieElem> {
@@ -58,19 +64,33 @@ fn mk_empty_interior() -> Vec<TrieElem> {
 }
 
 fn all_nothing(v: &Vec<TrieElem>) -> bool {
-    v.iter().all(|t| if let TrieElem::Nothing = t { true } else { false })
+    v.iter().all(|t| {
+        if let TrieElem::Nothing = t {
+            true
+        } else {
+            false
+        }
+    })
 }
 
 fn hexbytes(bytes: &[u8]) -> String {
-    bytes.iter().enumerate()
-         .map(|(i, x)| format!("{:02x}", x) + if i+1 == bytes.len() { "" } else { " " })
-         .collect::<Vec<_>>()
-         .concat()
+    bytes
+        .iter()
+        .enumerate()
+        .map(|(i, x)| format!("{:02x}", x) + if i + 1 == bytes.len() { "" } else { " " })
+        .collect::<Vec<_>>()
+        .concat()
 }
 
 // Returns whether the terminal was newly added (false if it was already
 // present).
-fn inserter(node: &mut Vec<TrieElem>, allbytes: &[u8], bytes: &[u8], asm: String, length: u8) -> bool {
+fn inserter(
+    node: &mut Vec<TrieElem>,
+    allbytes: &[u8],
+    bytes: &[u8],
+    asm: String,
+    length: u8,
+) -> bool {
     assert!(bytes.len() > 0);
     let index = bytes[0];
     if bytes.len() == 1 {
@@ -78,12 +98,26 @@ fn inserter(node: &mut Vec<TrieElem>, allbytes: &[u8], bytes: &[u8], asm: String
             TrieElem::Nothing => (),
             TrieElem::Terminal(t) => {
                 assert!(t.length == length);
-                assert!(t.asm == asm, "{} vs {}; bytes: {}", t.asm, asm, hexbytes(allbytes));
+                assert!(
+                    t.asm == asm,
+                    "{} vs {}; bytes: {}",
+                    t.asm,
+                    asm,
+                    hexbytes(allbytes)
+                );
                 return false;
             }
-            TrieElem::Interior(_) => panic!("Interior present where terminal is now provided at length: {}; bytes: {}; asm: {}", length, hexbytes(allbytes), asm),
+            TrieElem::Interior(_) => panic!(
+                "Interior present where terminal is now provided at length: {}; bytes: {}; asm: {}",
+                length,
+                hexbytes(allbytes),
+                asm
+            ),
         }
-        node[index as usize] = TrieElem::Terminal(Terminal{length: length, asm: asm});
+        node[index as usize] = TrieElem::Terminal(Terminal {
+            length: length,
+            asm: asm,
+        });
         return true;
     }
     if let TrieElem::Nothing = &node[index as usize] {
@@ -92,12 +126,14 @@ fn inserter(node: &mut Vec<TrieElem>, allbytes: &[u8], bytes: &[u8], asm: String
     match &mut node[index as usize] {
         TrieElem::Nothing => panic!(),
         TrieElem::Terminal(_) => panic!(),
-        TrieElem::Interior(sub_node) => inserter(sub_node, allbytes, &bytes[1..], asm, length+1)
+        TrieElem::Interior(sub_node) => inserter(sub_node, allbytes, &bytes[1..], asm, length + 1),
     }
 }
 
 fn traverse<F>(node: &Vec<TrieElem>, f: &mut F) -> ()
-    where F : FnMut(&Terminal) -> () {
+where
+    F: FnMut(&Terminal) -> (),
+{
     for t in node {
         match t {
             TrieElem::Interior(node) => traverse(node, f),
@@ -109,7 +145,7 @@ fn traverse<F>(node: &Vec<TrieElem>, f: &mut F) -> ()
 
 fn resolver<'a>(node: &'a Vec<TrieElem>, bytes: &[u8]) -> Option<&'a Terminal> {
     if bytes.len() == 0 {
-        return None
+        return None;
     }
     match &node[bytes[0] as usize] {
         TrieElem::Nothing => None,
@@ -139,9 +175,7 @@ fn sampler(node: &mut Vec<TrieElem>, mut current: Vec<u8>) -> (Option<Vec<u8>>, 
     current.push(index as u8);
     let (result, sub_empty) = match &mut node[index] {
         TrieElem::Nothing => panic!("Should have filtered out Nothing indices."),
-        TrieElem::Terminal(_) => {
-            (Some(current), true)
-        }
+        TrieElem::Terminal(_) => (Some(current), true),
         TrieElem::Interior(n) => sampler(n, current),
     };
     if sub_empty {
@@ -163,7 +197,9 @@ impl XTrie {
     }
 
     pub fn clone(&self) -> PyResult<XTrie> {
-        Ok(XTrie{trie: self.trie.clone()})
+        Ok(XTrie {
+            trie: self.trie.clone(),
+        })
     }
 
     // Returns true iff the key was freshly inserted.
@@ -190,7 +226,9 @@ impl XTrie {
         let root = &self.trie.root;
         match resolver(root, bytes) {
             Some(t) => Ok(t.asm.clone()),
-            None => Err(PyErr::new::<exceptions::KeyError, _>("Could not find bytes in trie"))
+            None => Err(PyErr::new::<exceptions::KeyError, _>(
+                "Could not find bytes in trie",
+            )),
         }
     }
 
@@ -202,7 +240,7 @@ impl XTrie {
         let mut histo = vec![];
         let mut add_to_histo = |t: &Terminal| {
             if histo.len() <= (t.length as usize) {
-                histo.resize((t.length+1) as usize, 0);
+                histo.resize((t.length + 1) as usize, 0);
             }
             histo[t.length as usize] += 1;
         };
@@ -214,9 +252,13 @@ impl XTrie {
     // with random garbage. If we padded it with zeros then the length of the
     // sample would be easy to determine by inspection of where the zeros
     // start!
-    pub fn sample_nr<'p>(&mut self, py: Python<'p>, length: Option<u8>) -> PyResult<Option<(&'p PyBytes, u8)>> {
+    pub fn sample_nr<'p>(
+        &mut self,
+        py: Python<'p>,
+        length: Option<u8>,
+    ) -> PyResult<Option<(&'p PyBytes, u8)>> {
         if all_nothing(&self.trie.root) {
-            return Ok(None)
+            return Ok(None);
         }
         let (result, _) = sampler(&mut self.trie.root, vec![]);
         match result {
@@ -235,12 +277,20 @@ impl XTrie {
         }
     }
 
-    pub fn sample_nr_mb<'p>(&mut self, py: Python<'p>, minibatch_size: u8, length: u8) -> PyResult<(Vec<&'p PyBytes>, Vec<u8>)> {
+    pub fn sample_nr_mb<'p>(
+        &mut self,
+        py: Python<'p>,
+        minibatch_size: u8,
+        length: u8,
+    ) -> PyResult<(Vec<&'p PyBytes>, Vec<u8>)> {
         let mut bytes = vec![];
         let mut sizes = vec![];
         for _ in 0..minibatch_size {
             match self.sample_nr(py, Some(length)).unwrap() {
-                Some((bs, len)) => { bytes.push(bs); sizes.push(len) },
+                Some((bs, len)) => {
+                    bytes.push(bs);
+                    sizes.push(len)
+                }
                 None => {
                     bytes.push(PyBytes::new(py, &vec![0u8; length as usize]));
                     sizes.push(0);
@@ -252,15 +302,26 @@ impl XTrie {
 }
 
 #[pyfunction]
+fn parse_asm(s: &str) -> PyResult<()> {
+    asm_parser::parse_opcode(s);
+    Ok(())
+}
+
+#[pyfunction]
+fn get_opcode_count() -> PyResult<u32> {
+    Ok(asm_parser::get_opcode_count())
+}
+
+#[pyfunction]
 fn mk_trie() -> PyResult<XTrie> {
-    Ok(XTrie{trie: Trie::new()})
+    Ok(XTrie { trie: Trie::new() })
 }
 
 #[pyfunction]
 fn load_from_path(path: &str) -> PyResult<XTrie> {
     let file = File::open(path)?;
     let trie = bincode::deserialize_from(file).unwrap();
-    Ok(XTrie{trie})
+    Ok(XTrie { trie })
 }
 
 /// This module is a python module implemented in Rust.
@@ -268,6 +329,8 @@ fn load_from_path(path: &str) -> PyResult<XTrie> {
 fn xtrie(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add_wrapped(wrap_pyfunction!(mk_trie))?;
     m.add_wrapped(wrap_pyfunction!(load_from_path))?;
+    m.add_wrapped(wrap_pyfunction!(parse_asm))?;
+    m.add_wrapped(wrap_pyfunction!(get_opcode_count))?;
     m.add_class::<XTrie>()?;
 
     Ok(())
