@@ -1,4 +1,14 @@
+use serde::{Deserialize, Serialize};
+
+#[derive(Serialize, Deserialize, Clone, Copy)]
 pub enum Opcode {
+    UNKNOWN,
+
+    LDMXCSR,
+    STMXCSR,
+    MFENCE,
+    XORB,
+    ROLW,
     ANDPD,
     CMPNLESD,
     DIVQ,
@@ -20,6 +30,7 @@ pub enum Opcode {
 
     PSRLDQ,
     PSUBB,
+    SUBB,
     VPANDN,
     VPCMPGTB,
     VPCMPISTRI,
@@ -63,7 +74,10 @@ pub enum Opcode {
     JMPQ,
     SUB,
 
+    BTC,
+
     MOVSLQ,
+    MOVSBW,
     MOVB,
     MOVD,
     MOVDQA,
@@ -806,6 +820,7 @@ pub fn parse_opcode(s: &str) -> Option<Opcode> {
         "vpcmpgtb" => Opcode::VPCMPGTB,
         "vpcmpistri" => Opcode::VPCMPISTRI,
         "vpsubb" => Opcode::VPSUBB,
+        "subb" => Opcode::SUBB,
 
         "lddqu" => Opcode::LDDQU,
         "movlpd" => Opcode::MOVLPD,
@@ -821,6 +836,13 @@ pub fn parse_opcode(s: &str) -> Option<Opcode> {
         "pmaxub" => Opcode::PMAXUB,
         "vpbroadcastb" => Opcode::VPBROADCASTB,
         "notw" => Opcode::NOTW,
+        "movsbw" => Opcode::MOVSBW,
+        "btc" => Opcode::BTC,
+        "rolw" => Opcode::ROLW,
+        "xorb" => Opcode::XORB,
+        "mfence" => Opcode::MFENCE,
+        "stmxcsr" => Opcode::STMXCSR,
+        "ldmxcsr" => Opcode::LDMXCSR,
 
         "notrack" => return parse_opcode(pieces[1]),
         "rep" => return parse_opcode(pieces[1]),

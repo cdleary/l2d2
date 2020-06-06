@@ -28,7 +28,7 @@ INPUT_FLOATS = (        # Bytes are turned into a number of floats.
     BYTES * INPUT_FLOATS_PER_BYTE)
 CLASSES = BYTES+1       # Length categories; 0 for "not a valid instruction".
 EVAL_MINIBATCHES = 32   # Number of minibatches for during-training eval.
-STEP_SIZE = 1e-4        # Learning rate.
+STEP_SIZE = 1e-3        # Learning rate.
 FC = 4096               # Fully connected neurons to use on last hidden output.
 
 
@@ -146,11 +146,12 @@ def init_params(key, carry_len: int):
 def _get_eval_data(data: xtrie.XTrie, batch_size: int) -> Tuple[List[bytes], List[int]]:
     data = data.clone()
     eval_sample_start = datetime.datetime.now()
-    inputs, targets = [], []
+    inputs, targets, opcodes = [], [], []
     for _ in range(EVAL_MINIBATCHES):
-        bs, ts = data.sample_nr_mb(batch_size, BYTES)
+        bs, ts, opcs = data.sample_nr_mb(batch_size, BYTES)
         inputs += bs
         targets += ts
+        opcodes += opcs
     eval_sample_end = datetime.datetime.now()
     print('sampling time per minibatch: {:.3f} us'.format(
           (eval_sample_end-eval_sample_start).total_seconds()
@@ -218,7 +219,7 @@ def _do_train(opt_state, eval_data, epochs: int, batch_size: int, carry_len: int
             if item is None:
                 break  # Done with epoch.
 
-            samples, targets = item
+            samples, targets, opcodes = item
             assert len(targets) == batch_size, targets
             assert len(samples) == batch_size
             samples = preprocess.samples_to_input(samples, VALUE_OPTS)
