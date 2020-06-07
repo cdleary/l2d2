@@ -6,10 +6,12 @@ import os
 import optparse
 import queue
 import sys
+import time
 import threading
 from typing import List, Tuple
 
 import numpy as np
+import termcolor
 
 import jax
 from jax.experimental import optimizers
@@ -76,7 +78,7 @@ def train_step(i, opt_state, sample, target, carry_len: int):
     return opt_update(i, g, opt_state)
 
 
-def run_eval(p, eval_data: Tuple[np.array, np.array], carry_len: int):
+def run_eval(p, eval_data: Tuple[np.array, np.array], carry_len: int) -> float:
     """Runs evaluation step on the given eval_minibatches with parameters p."""
     print('... running eval')
     sys.stdout.flush()
@@ -92,7 +94,9 @@ def run_eval(p, eval_data: Tuple[np.array, np.array], carry_len: int):
     for want in range(CLASSES):
         print(f'want {want:2d}: ', end='')
         for got in range(CLASSES):
-            print('{:5d}'.format(confusion[(want, got)]), end=' ')
+            value = confusion[(want, got)]
+            color = 'green' if want == got else ('red' if value != 0 else None)
+            print(termcolor.colored(f'{value:5d}', color=color), end=' ')
         print()
 
     # Print out summary accuracy statistic(s).
@@ -101,6 +105,7 @@ def run_eval(p, eval_data: Tuple[np.array, np.array], carry_len: int):
             for i in range(CLASSES)) / float(sum(confusion.values())) * 100.0
     print(f'accuracy: {accuracy:.2f}%')
     sys.stdout.flush()
+    return accuracy
 
 
 def time_train_step(batch_size: int, carry_len: int, opt_state) -> datetime.timedelta:
@@ -196,8 +201,20 @@ def scoped_time(annotation):
     print('...', annotation, 'done in', end-start)
 
 
+class StatRecorder:
+
+    def __init__(self):
+        self.f = open('/tmp/l2d2_{}.txt'.format(time.time()), 'w')
+
+    def note_eval_accuracy(self, epochno: int, stepno: int, accuracy: float):
+        now = datetime.datetime.now()
+        print(f't: {now} epochno: {epochno} stepno: {stepno} accuracy: {accuracy}', file=self.f)
+        self.f.flush()
+
+
+
 def _do_train(opt_state, eval_data, epochs: int, batch_size: int, carry_len: int,
-              train_steps_per_eval: int, q: queue.Queue):
+              train_steps_per_eval: int, q: queue.Queue, stat_recorder: StatRecorder):
     print('... starting training')
     train_start = datetime.datetime.now()
 
@@ -211,8 +228,8 @@ def _do_train(opt_state, eval_data, epochs: int, batch_size: int, carry_len: int
                 print('... epoch', epoch, 'step', stepno, '@', now,
                       '@ {:.2f} step/s'.format(
                           stepno / (now-train_start).total_seconds()))
-                sys.stdout.flush()
-                run_eval(get_params(opt_state), eval_data, carry_len)
+                accuracy = run_eval(get_params(opt_state), eval_data, carry_len)
+                stat_recorder.note_eval_accuracy(epoch, stepno, accuracy)
 
             # Grab item from the queue, see if it's a "terminate" sentinel.
             item = q.get()
@@ -229,13 +246,13 @@ def _do_train(opt_state, eval_data, epochs: int, batch_size: int, carry_len: int
             sys.stdout.write('.')
             if stepno % 64 == 0:
                 sys.stdout.write('\n')
-            sys.stdout.flush()
 
         # End of epoch!
         print()
         print(f'... end of epoch {epoch}; {stepno} steps => {stepno * batch_size} samples')
         p = get_params(opt_state)
-        run_eval(p, eval_data, carry_len)
+        accuracy = run_eval(p, eval_data, carry_len)
+        stat_recorder.note_eval_accuracy(epoch, stepno, accuracy)
 
     train_end = datetime.datetime.now()
 
@@ -276,8 +293,10 @@ def run_train(opts) -> None:
     sampler_thread = SamplerThread(q, data, opts.batch_size)
     sampler_thread.start()
 
+    stat_recorder = StatRecorder()
+
     try:
-        _do_train(opt_state, eval_data, opts.epochs, opts.batch_size, opts.carry_len, opts.steps_per_eval, q)
+        _do_train(opt_state, eval_data, opts.epochs, opts.batch_size, opts.carry_len, opts.steps_per_eval, q, stat_recorder)
     except Exception as e:
         sampler_thread.cancel()
         sampler_thread.join()
