@@ -1,3 +1,5 @@
+#![recursion_limit="4096"]
+
 use std::collections::HashSet;
 use std::fs::File;
 
@@ -9,7 +11,9 @@ use serde::{Deserialize, Serialize};
 use pyo3::exceptions;
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
+use pyo3::types::PyBool;
 use pyo3::wrap_pyfunction;
+use pyo3::class::basic::CompareOp;
 use pyo3::{PyErr, Python};
 
 mod asm_parser;
@@ -20,7 +24,7 @@ mod asm_parser;
 struct Terminal {
     length: u8,
     opcode: asm_parser::Opcode,
-    //asm: String,
+    asm: Option<String>,
 }
 
 // Member of the trie; for any given byte we can have a node that leads to more
@@ -39,16 +43,27 @@ struct Trie {
 
     // Hashes of binaries already processed.
     binaries: HashSet<String>,
+
+    // Whether to store provided assembly in the trie.
+    keep_asm: bool,
 }
 
 impl Trie {
-    fn new() -> Trie {
+    fn new(keep_asm: bool) -> Trie {
         Trie {
             root: mk_empty_interior(),
             total: 0,
             binaries: HashSet::new(),
+            keep_asm: keep_asm,
         }
     }
+}
+
+#[pyclass]
+struct MiniBatch {
+    bytes: Vec<Vec<u8>>,
+    sizes: Vec<u8>,
+    opcodes: Vec<u16>,
 }
 
 #[pyclass]
@@ -91,6 +106,7 @@ fn inserter(
     bytes: &[u8],
     asm: String,
     length: u8,
+    keep_asm: bool,
 ) -> bool {
     assert!(bytes.len() > 0);
     let index = bytes[0];
@@ -118,7 +134,7 @@ fn inserter(
         node[index as usize] = TrieElem::Terminal(Terminal {
             length: length,
             opcode: asm_parser::parse_opcode(&asm).unwrap(),
-            //asm: asm,
+            asm: if keep_asm { Some(asm) } else { None },
         });
         return true;
     }
@@ -128,7 +144,7 @@ fn inserter(
     match &mut node[index as usize] {
         TrieElem::Nothing => panic!(),
         TrieElem::Terminal(_) => panic!(),
-        TrieElem::Interior(sub_node) => inserter(sub_node, allbytes, &bytes[1..], asm, length + 1),
+        TrieElem::Interior(sub_node) => inserter(sub_node, allbytes, &bytes[1..], asm, length + 1, keep_asm),
     }
 }
 
@@ -199,6 +215,92 @@ fn sampler(
     (result, present.len() == 1 && sub_empty)
 }
 
+#[pyclass]
+#[derive(PartialEq, Clone)]
+struct PyRecord {
+    bytes: Vec<u8>,
+    #[pyo3(get)]
+    length: u8,
+    #[pyo3(get)]
+    opcode: u16,
+}
+
+#[pymethods]
+impl PyRecord {
+    #[new]
+    fn new(bytes: Vec<u8>, length: u8, opcode: &str) -> PyResult<Self> {
+        let opcode: u16 = match asm_parser::parse_opcode(opcode) {
+            Some(opcode_enum) => opcode_enum as u16,
+            None => return Err(PyErr::new::<exceptions::ValueError, _>(format!("Invalid opcode {:?}", opcode))),
+        };
+        Ok(PyRecord{bytes: bytes.clone(), length: length, opcode: opcode})
+    }
+
+    #[getter]
+    fn bytes<'p>(&self, py: Python<'p>) -> PyResult<&'p PyBytes> {
+        Ok(PyBytes::new(py, &self.bytes))
+    }
+}
+
+#[pyproto]
+impl pyo3::class::PyObjectProtocol for PyRecord {
+    fn __repr__(&self) -> PyResult<String> {
+        Ok(format!("Record{{bytes: {:?}, length: {}, opcode: {}}}", self.bytes, self.length, self.opcode))
+    }
+    fn __richcmp__(&self, other: PyRecord, op: CompareOp) -> PyResult<PyObject> {
+        let gil = GILGuard::acquire();
+        let py = gil.python();
+        Ok(match op {
+            CompareOp::Eq => PyBool::new(py, *self == other).to_object(py),
+            CompareOp::Ne => PyBool::new(py, *self != other).to_object(py),
+            _ => py.NotImplemented()
+        })
+    }
+}
+
+struct Record {
+    bytes: Vec<u8>,
+    length: u8,
+    opcode: u16,
+}
+
+impl Record {
+    fn to_py(&self) -> PyRecord {
+        PyRecord{bytes: self.bytes.clone(), length: self.length, opcode: self.opcode}
+    }
+}
+
+// "length" indicates the length to which we should pad the sampled bytes
+// with random garbage. If we padded it with zeros then the length of the
+// sample would be easy to determine by inspection of where the zeros
+// start!
+fn sample_nr(
+    xt: &mut XTrie,
+    length: Option<u8>,
+) -> Option<Record> {
+    if all_nothing(&xt.trie.root) {
+        // Whole trie is empty.
+        return None;
+    }
+    let (result, _) = sampler(&mut xt.trie.root, vec![]);
+    match result {
+        Some((mut v, opcode)) => {
+            let orig_len = v.len();
+            if let Some(len) = length {
+                // Push random bytes on until we hit our target length.
+                let mut rng = thread_rng();
+                while v.len() < len as usize {
+                    let b: u8 = rng.gen();
+                    v.push(b)
+                }
+            }
+            Some(Record{bytes: v, length: orig_len as u8, opcode: opcode as u16})
+        }
+        None => None,
+    }
+}
+
+
 #[pymethods]
 impl XTrie {
     #[getter]
@@ -233,7 +335,7 @@ impl XTrie {
     }
 
     pub fn insert(&mut self, bytes: &[u8], asm: String) -> PyResult<()> {
-        self.trie.total += inserter(&mut self.trie.root, bytes, bytes, asm, 1) as u64;
+        self.trie.total += inserter(&mut self.trie.root, bytes, bytes, asm, 1, self.trie.keep_asm) as u64;
         Ok(())
     }
 
@@ -263,61 +365,31 @@ impl XTrie {
         Ok(histo)
     }
 
-    // "length" indicates the length to which we should pad the sampled bytes
-    // with random garbage. If we padded it with zeros then the length of the
-    // sample would be easy to determine by inspection of where the zeros
-    // start!
-    pub fn sample_nr<'p>(
-        &mut self,
-        py: Python<'p>,
-        length: Option<u8>,
-    ) -> PyResult<Option<(&'p PyBytes, u8, u16)>> {
-        if all_nothing(&self.trie.root) {
-            // Whole trie is empty.
-            return Ok(None);
-        }
-        let (result, _) = sampler(&mut self.trie.root, vec![]);
-        match result {
-            Some((mut v, opcode)) => {
-                let orig_len = v.len();
-                if let Some(len) = length {
-                    // Push random bytes on until we hit our target length.
-                    let mut rng = thread_rng();
-                    while v.len() < len as usize {
-                        let b: u8 = rng.gen();
-                        v.push(b)
-                    }
-                }
-                Ok(Some((PyBytes::new(py, &v), orig_len as u8, opcode as u16)))
-            }
-            None => Ok(None),
-        }
+    pub fn sample_nr(&mut self, length: Option<u8>) -> PyResult<Option<PyRecord>> {
+        Ok(sample_nr(self, length).map(|r| r.to_py()))
     }
 
-    pub fn sample_nr_mb<'p>(
+    pub fn sample_nr_mb(
         &mut self,
-        py: Python<'p>,
         minibatch_size: u8,
         length: u8,
-    ) -> PyResult<(Vec<&'p PyBytes>, Vec<u8>, Vec<u16>)> {
-        let mut bytes = vec![];
-        let mut sizes = vec![];
-        let mut opcodes = vec![];
+    ) -> PyResult<MiniBatch> {
+        let mut mb = MiniBatch{bytes: vec![], sizes: vec![], opcodes: vec![]};
         for _ in 0..minibatch_size {
-            match self.sample_nr(py, Some(length)).unwrap() {
-                Some((bs, len, opcode)) => {
-                    bytes.push(bs);
-                    sizes.push(len);
-                    opcodes.push(opcode);
+            match sample_nr(self, Some(length)) {
+                Some(r) => {
+                    mb.bytes.push(r.bytes);
+                    mb.sizes.push(r.length);
+                    mb.opcodes.push(r.opcode);
                 }
                 None => {
-                    bytes.push(PyBytes::new(py, &vec![0u8; length as usize]));
-                    sizes.push(0);
-                    opcodes.push(0);
+                    mb.bytes.push(vec![0u8; length as usize]);
+                    mb.sizes.push(0);
+                    mb.opcodes.push(0);
                 }
             }
         }
-        Ok((bytes, sizes, opcodes))
+        Ok(mb)
     }
 }
 
@@ -333,8 +405,8 @@ fn get_opcode_count() -> PyResult<u32> {
 }
 
 #[pyfunction]
-fn mk_trie() -> PyResult<XTrie> {
-    Ok(XTrie { trie: Trie::new() })
+fn mk_trie(keep_asm: bool) -> PyResult<XTrie> {
+    Ok(XTrie { trie: Trie::new(keep_asm) })
 }
 
 #[pyfunction]
@@ -352,6 +424,7 @@ fn xtrie(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add_wrapped(wrap_pyfunction!(parse_asm))?;
     m.add_wrapped(wrap_pyfunction!(get_opcode_count))?;
     m.add_class::<XTrie>()?;
+    m.add_class::<PyRecord>()?;
 
     Ok(())
 }
