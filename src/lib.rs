@@ -1,12 +1,10 @@
 #![recursion_limit="4096"]
 
-use std::collections::HashSet;
 use std::fs::File;
 
 use rand::seq::SliceRandom;
 use rand::thread_rng;
 use rand::Rng;
-use serde::{Deserialize, Serialize};
 
 use pyo3::exceptions;
 use pyo3::prelude::*;
@@ -17,175 +15,40 @@ use pyo3::class::basic::CompareOp;
 use pyo3::{PyErr, Python};
 
 mod asm_parser;
+mod trie;
 
-// Represents a leaf in the x86 assembly trie; having a cached length (in
-// bytes) and the assembly text associated with its byte sequence.
-#[derive(Serialize, Deserialize, Clone)]
-struct Terminal {
+/// A record; e.g. as sampled from the trie.
+struct Record {
+    bytes: Vec<u8>,
     length: u8,
-    opcode: asm_parser::Opcode,
-    asm: Option<String>,
+    opcode: u16,
 }
 
-// Member of the trie; for any given byte we can have a node that leads to more
-// terminals, a terminal, or not have any entry yet.
-#[derive(Serialize, Deserialize, Clone)]
-enum TrieElem {
-    Interior(Vec<TrieElem>),
-    Terminal(Terminal),
-    Nothing,
-}
-
-#[derive(Serialize, Deserialize, Clone)]
-struct Trie {
-    root: Vec<TrieElem>,
-    total: u64,
-
-    // Hashes of binaries already processed.
-    binaries: HashSet<String>,
-
-    // Whether to store provided assembly in the trie.
-    keep_asm: bool,
-}
-
-impl Trie {
-    fn new(keep_asm: bool) -> Trie {
-        Trie {
-            root: mk_empty_interior(),
-            total: 0,
-            binaries: HashSet::new(),
-            keep_asm: keep_asm,
-        }
+impl Record {
+    fn to_py(&self) -> PyRecord {
+        PyRecord{bytes: self.bytes.clone(), length: self.length, opcode: self.opcode}
     }
-}
-
-#[pyclass]
-struct MiniBatch {
-    bytes: Vec<Vec<u8>>,
-    sizes: Vec<u8>,
-    opcodes: Vec<u16>,
 }
 
 #[pyclass]
 struct XTrie {
-    trie: Trie,
+    trie: trie::Trie,
 }
 
-fn mk_empty_interior() -> Vec<TrieElem> {
-    let mut result = vec![];
-    for _i in 0..256 {
-        result.push(TrieElem::Nothing);
-    }
-    return result;
-}
-
-fn all_nothing(v: &Vec<TrieElem>) -> bool {
-    v.iter().all(|t| {
-        if let TrieElem::Nothing = t {
-            true
-        } else {
-            false
-        }
-    })
-}
-
-fn hexbytes(bytes: &[u8]) -> String {
-    bytes
-        .iter()
-        .enumerate()
-        .map(|(i, x)| format!("{:02x}", x) + if i + 1 == bytes.len() { "" } else { " " })
-        .collect::<Vec<_>>()
-        .concat()
-}
-
-// Returns whether the terminal was newly added (false if it was already
-// present).
-fn inserter(
-    node: &mut Vec<TrieElem>,
-    allbytes: &[u8],
-    bytes: &[u8],
-    asm: String,
-    length: u8,
-    keep_asm: bool,
-) -> bool {
-    assert!(bytes.len() > 0);
-    let index = bytes[0];
-    if bytes.len() == 1 {
-        match &node[index as usize] {
-            TrieElem::Nothing => (),
-            TrieElem::Terminal(t) => {
-                assert!(t.length == length);
-                //assert!(
-                //    t.asm == asm,
-                //    "{} vs {}; bytes: {}",
-                //    t.asm,
-                //    asm,
-                //    hexbytes(allbytes)
-                //);
-                return false;
-            }
-            TrieElem::Interior(_) => panic!(
-                "Interior present where terminal is now provided at length: {}; bytes: {}; asm: {}",
-                length,
-                hexbytes(allbytes),
-                asm
-            ),
-        }
-        node[index as usize] = TrieElem::Terminal(Terminal {
-            length: length,
-            opcode: asm_parser::parse_opcode(&asm).unwrap(),
-            asm: if keep_asm { Some(asm) } else { None },
-        });
-        return true;
-    }
-    if let TrieElem::Nothing = &node[index as usize] {
-        node[index as usize] = TrieElem::Interior(mk_empty_interior())
-    }
-    match &mut node[index as usize] {
-        TrieElem::Nothing => panic!(),
-        TrieElem::Terminal(_) => panic!(),
-        TrieElem::Interior(sub_node) => inserter(sub_node, allbytes, &bytes[1..], asm, length + 1, keep_asm),
-    }
-}
-
-fn traverse<F>(node: &Vec<TrieElem>, f: &mut F) -> ()
-where
-    F: FnMut(&Terminal) -> (),
-{
-    for t in node {
-        match t {
-            TrieElem::Interior(node) => traverse(node, f),
-            TrieElem::Terminal(t) => f(t),
-            TrieElem::Nothing => (),
-        }
-    }
-}
-
-fn resolver<'a>(node: &'a Vec<TrieElem>, bytes: &[u8]) -> Option<&'a Terminal> {
-    if bytes.len() == 0 {
-        return None;
-    }
-    match &node[bytes[0] as usize] {
-        TrieElem::Nothing => None,
-        TrieElem::Terminal(t) => Some(t),
-        TrieElem::Interior(n) => resolver(&n, &bytes[1..]),
-    }
-}
-
-// Randomly selects a terminal from within "node".
-//
-// Returns the terminal, if present, and whether this node is now empty, since
-// we sampled without replacement. If the node is empty, the parent node should
-// make a note of it to avoid recursing into it in future samplings.
+/// Randomly selects a terminal from within "node".
+///
+/// Returns the terminal, if present, and whether this node is now empty, since
+/// we sampled without replacement. If the node is empty, the parent node should
+/// make a note of it to avoid recursing into it in future samplings.
 fn sampler(
-    node: &mut Vec<TrieElem>,
+    node: &mut Vec<trie::TrieElem>,
     mut current: Vec<u8>,
-) -> (Option<(Vec<u8>, asm_parser::Opcode)>, bool) {
+) -> (Option<Record>, bool) {
     // Collect all the indices that are present.
     let mut present: Vec<usize> = Vec::with_capacity(node.len());
     for (i, elem) in node.iter().enumerate() {
         match elem {
-            TrieElem::Nothing => (),
+            trie::TrieElem::Nothing => (),
             _ => present.push(i),
         }
     }
@@ -200,15 +63,18 @@ fn sampler(
     current.push(index as u8);
 
     let (result, sub_empty) = match &mut node[index] {
-        TrieElem::Nothing => panic!("Should have filtered out Nothing indices."),
+        trie::TrieElem::Nothing => panic!("Should have filtered out Nothing indices."),
         // If we hit a terminal our result is the current byte traversal.
-        TrieElem::Terminal(t) => (Some((current, t.opcode)), true),
-        TrieElem::Interior(n) => sampler(n, current),
+        trie::TrieElem::Terminal(t) => {
+            let len = current.len();
+            (Some(Record{bytes: current, length: len as u8, opcode: t.opcode as u16}), true)
+        }
+        trie::TrieElem::Interior(n) => sampler(n, current),
     };
 
     // If the sub-node is now empty from our sampling, we mark it as nothing.
     if sub_empty {
-        node[index] = TrieElem::Nothing;
+        node[index] = trie::TrieElem::Nothing;
     }
 
     // Provide the result and whether this node is now empty.
@@ -242,6 +108,15 @@ impl PyRecord {
     }
 }
 
+/// Vector-scaled version of a PyRecord.
+#[pyclass]
+struct MiniBatch {
+    bytes: Vec<Vec<u8>>,
+    sizes: Vec<u8>,
+    opcodes: Vec<u16>,
+}
+
+
 #[pyproto]
 impl pyo3::class::PyObjectProtocol for PyRecord {
     fn __repr__(&self) -> PyResult<String> {
@@ -258,43 +133,30 @@ impl pyo3::class::PyObjectProtocol for PyRecord {
     }
 }
 
-struct Record {
-    bytes: Vec<u8>,
-    length: u8,
-    opcode: u16,
-}
-
-impl Record {
-    fn to_py(&self) -> PyRecord {
-        PyRecord{bytes: self.bytes.clone(), length: self.length, opcode: self.opcode}
-    }
-}
-
-// "length" indicates the length to which we should pad the sampled bytes
-// with random garbage. If we padded it with zeros then the length of the
-// sample would be easy to determine by inspection of where the zeros
-// start!
+/// "target_length" indicates the length to which we should pad the sampled bytes
+/// with random garbage. If we padded it with zeros then the length of the
+/// sample would be easy to determine by inspection of where the zeros
+/// start!
 fn sample_nr(
     xt: &mut XTrie,
-    length: Option<u8>,
+    target_length: Option<u8>,
 ) -> Option<Record> {
-    if all_nothing(&xt.trie.root) {
+    if trie::all_nothing(&xt.trie.root) {
         // Whole trie is empty.
         return None;
     }
-    let (result, _) = sampler(&mut xt.trie.root, vec![]);
+    let (result, _now_empty): (Option<Record>, bool) = sampler(&mut xt.trie.root, vec![]);
     match result {
-        Some((mut v, opcode)) => {
-            let orig_len = v.len();
-            if let Some(len) = length {
+        Some(mut r) => {
+            if let Some(len) = target_length {
                 // Push random bytes on until we hit our target length.
                 let mut rng = thread_rng();
-                while v.len() < len as usize {
+                while r.bytes.len() < len as usize {
                     let b: u8 = rng.gen();
-                    v.push(b)
+                    r.bytes.push(b)
                 }
             }
-            Some(Record{bytes: v, length: orig_len as u8, opcode: opcode as u16})
+            Some(r)
         }
         None => None,
     }
@@ -335,7 +197,7 @@ impl XTrie {
     }
 
     pub fn insert(&mut self, bytes: &[u8], asm: String) -> PyResult<()> {
-        self.trie.total += inserter(&mut self.trie.root, bytes, bytes, asm, 1, self.trie.keep_asm) as u64;
+        self.trie.total += trie::inserter(&mut self.trie.root, bytes, bytes, asm, 1, self.trie.keep_asm) as u64;
         Ok(())
     }
 
@@ -350,18 +212,18 @@ impl XTrie {
     //}
 
     pub fn empty(&self) -> PyResult<bool> {
-        Ok(all_nothing(&self.trie.root))
+        Ok(trie::all_nothing(&self.trie.root))
     }
 
     pub fn histo(&self) -> PyResult<Vec<i32>> {
         let mut histo = vec![];
-        let mut add_to_histo = |t: &Terminal| {
+        let mut add_to_histo = |t: &trie::Terminal| {
             if histo.len() <= (t.length as usize) {
                 histo.resize((t.length + 1) as usize, 0);
             }
             histo[t.length as usize] += 1;
         };
-        traverse(&self.trie.root, &mut add_to_histo);
+        trie::traverse(&self.trie.root, &mut add_to_histo);
         Ok(histo)
     }
 
@@ -406,7 +268,7 @@ fn get_opcode_count() -> PyResult<u32> {
 
 #[pyfunction]
 fn mk_trie(keep_asm: bool) -> PyResult<XTrie> {
-    Ok(XTrie { trie: Trie::new(keep_asm) })
+    Ok(XTrie { trie: trie::Trie::new(keep_asm) })
 }
 
 #[pyfunction]
