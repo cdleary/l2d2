@@ -9,6 +9,7 @@ pub struct Record {
     pub bytes: Vec<u8>,
     pub length: u8,
     pub opcode: u16,
+    pub asm: Option<String>
 }
 
 /// Randomly selects a terminal from within "node".
@@ -43,7 +44,7 @@ fn sampler(
         // If we hit a terminal our result is the current byte traversal.
         trie::TrieElem::Terminal(t) => {
             let len = current.len();
-            (Some(Record{bytes: current, length: len as u8, opcode: t.opcode as u16}), true)
+            (Some(Record{bytes: current, length: len as u8, opcode: t.opcode as u16, asm: t.asm.clone()}), true)
         }
         trie::TrieElem::Interior(n) => sampler(n, current),
     };

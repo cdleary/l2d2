@@ -22,6 +22,9 @@ def test_multi_insert_and_histo():
     t.insert(b'24', 'cmp')
     assert t.histo() == [0, 1, 2, 1]
 
+    minibatch = t.sample_nr_mb(4, 3)
+    assert sorted(minibatch.sizes) == [1, 2, 2, 3]
+
 
 def test_empty_sample():
     t = mk_trie()

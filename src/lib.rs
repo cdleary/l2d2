@@ -19,7 +19,7 @@ struct XTrie {
 
 impl trie_sampler::Record {
     fn to_py(&self) -> PyRecord {
-        PyRecord{bytes: self.bytes.clone(), length: self.length, opcode: self.opcode}
+        PyRecord{bytes: self.bytes.clone(), length: self.length, opcode: self.opcode, asm: self.asm.clone()}
     }
 }
 
@@ -31,17 +31,19 @@ struct PyRecord {
     length: u8,
     #[pyo3(get)]
     opcode: u16,
+    #[pyo3(get)]
+    asm: Option<String>,
 }
 
 #[pymethods]
 impl PyRecord {
     #[new]
-    fn new(bytes: Vec<u8>, length: u8, opcode: &str) -> PyResult<Self> {
+    fn new(bytes: Vec<u8>, length: u8, opcode: &str, asm: Option<String>) -> PyResult<Self> {
         let opcode: u16 = match asm_parser::parse_opcode(opcode) {
             Some(opcode_enum) => opcode_enum as u16,
             None => return Err(PyErr::new::<exceptions::ValueError, _>(format!("Invalid opcode {:?}", opcode))),
         };
-        Ok(PyRecord{bytes: bytes.clone(), length: length, opcode: opcode})
+        Ok(PyRecord{bytes: bytes.clone(), length: length, opcode: opcode, asm: asm.clone()})
     }
 
     #[getter]
@@ -54,7 +56,9 @@ impl PyRecord {
 #[pyclass]
 struct MiniBatch {
     bytes: Vec<Vec<u8>>,
+    #[pyo3(get)]
     sizes: Vec<u8>,
+    #[pyo3(get)]
     opcodes: Vec<u16>,
 }
 
