@@ -1,3 +1,5 @@
+#![feature(test)]
+
 use std::fs::File;
 
 use pyo3::exceptions;
@@ -13,8 +15,25 @@ mod trie;
 mod trie_sampler;
 
 #[pyclass]
+#[derive(Clone)]
+struct XTrieOpts {
+    pub byte: bool,
+    pub nibbles: bool,
+    pub crumbs: bool,
+    pub bits: bool,
+    pub keep_asm: bool,
+}
+
+impl XTrieOpts {
+    fn new() -> XTrieOpts {
+        return XTrieOpts{byte: true, nibbles: true, crumbs: true, bits: true, keep_asm: false}
+    }
+}
+
+#[pyclass]
 struct XTrie {
     trie: trie::Trie,
+    opts: XTrieOpts,
 }
 
 impl trie_sampler::Record {
@@ -33,6 +52,35 @@ struct PyRecord {
     opcode: u16,
     #[pyo3(get)]
     asm: Option<String>,
+}
+
+fn byte_to_float(x: u8) -> f32 {
+    f32::from_bits((127 << 23) | (x as u32))
+}
+
+fn bytes_to_floats(bytes: &[u8], opts: &XTrieOpts) -> Vec<f32> {
+    let mut result = Vec::with_capacity((opts.byte as usize) + 2 * (opts.nibbles as usize) + 4 * (opts.crumbs as usize) + 8 * (opts.bits as usize));
+    for &byte in bytes {
+        if opts.byte {
+            result.push(byte_to_float(byte));
+        }
+        if opts.nibbles {
+            result.push(byte_to_float(byte >> 4));
+            result.push(byte_to_float(byte & 0xff));
+        }
+        if opts.crumbs {
+            result.push(byte_to_float((byte >> 6) & 0x3));
+            result.push(byte_to_float((byte >> 4) & 0x3));
+            result.push(byte_to_float((byte >> 2) & 0x3));
+            result.push(byte_to_float((byte >> 0) & 0x3));
+        }
+        if opts.bits {
+            for i in 0..8 {
+                result.push(byte_to_float((byte >> i) & 0x1));
+            }
+        }
+    }
+    result
 }
 
 #[pymethods]
@@ -54,23 +102,23 @@ impl PyRecord {
 
 /// Vector-scaled version of a PyRecord.
 #[pyclass]
-struct MiniBatch {
-    bytes: Vec<Vec<u8>>,
-    #[pyo3(get)]
-    lengths: Vec<u8>,
-    #[pyo3(get)]
-    opcodes: Vec<u16>,
+struct PyMiniBatch {
+    mb: trie_sampler::MiniBatch
 }
 
 #[pymethods]
-impl MiniBatch {
+impl PyMiniBatch {
     #[getter]
-    fn bytes<'p>(&self, py: Python<'p>) -> PyResult<Vec<&'p PyBytes>> {
-        let mut result = vec![];
-        for bytes in self.bytes.iter() {
-            result.push(PyBytes::new(py, &bytes))
-        }
-        Ok(result)
+    fn floats(&self) -> PyResult<Vec<Vec<f32>>> {
+        Ok(self.mb.floats.clone())
+    }
+    #[getter]
+    fn lengths(&self) -> PyResult<Vec<u8>> {
+        Ok(self.mb.length.clone())
+    }
+    #[getter]
+    fn opcodes(&self) -> PyResult<Vec<u16>> {
+        Ok(self.mb.opcode.clone())
     }
 }
 
@@ -105,6 +153,7 @@ impl XTrie {
     pub fn clone(&self) -> PyResult<XTrie> {
         Ok(XTrie {
             trie: self.trie.clone(),
+            opts: self.opts.clone(),
         })
     }
 
@@ -162,23 +211,12 @@ impl XTrie {
         &mut self,
         minibatch_size: u8,
         length: u8,
-    ) -> PyResult<MiniBatch> {
-        let mut mb = MiniBatch{bytes: vec![], lengths: vec![], opcodes: vec![]};
-        for _ in 0..minibatch_size {
-            match trie_sampler::sample_nr(&mut self.trie.root, Some(length)) {
-                Some(r) => {
-                    mb.bytes.push(r.bytes);
-                    mb.lengths.push(r.length);
-                    mb.opcodes.push(r.opcode);
-                }
-                None => {
-                    mb.bytes.push(vec![0u8; length as usize]);
-                    mb.lengths.push(0);
-                    mb.opcodes.push(0);
-                }
-            }
+    ) -> PyResult<PyMiniBatch> {
+        let mut mb = trie_sampler::sample_nr_mb(&mut self.trie.root, length, minibatch_size);
+        for bytes in &mb.bytes {
+            mb.floats.push(bytes_to_floats(&bytes, &self.opts));
         }
-        Ok(mb)
+        Ok(PyMiniBatch{mb})
     }
 }
 
@@ -194,26 +232,34 @@ fn get_opcode_count() -> PyResult<u32> {
 }
 
 #[pyfunction]
-fn mk_trie(keep_asm: bool) -> PyResult<XTrie> {
-    Ok(XTrie { trie: trie::Trie::new(keep_asm) })
+fn mk_trie(opts: XTrieOpts) -> PyResult<XTrie> {
+    Ok(XTrie { trie: trie::Trie::new(opts.keep_asm), opts: opts })
 }
 
 #[pyfunction]
-fn load_from_path(path: &str) -> PyResult<XTrie> {
+fn load_from_path(path: &str, opts: XTrieOpts) -> PyResult<XTrie> {
     let file = File::open(path)?;
     let trie = bincode::deserialize_from(file).unwrap();
-    Ok(XTrie { trie })
+    Ok(XTrie { trie, opts })
+}
+
+#[pyfunction]
+fn mk_opts() -> PyResult<XTrieOpts> {
+    Ok(XTrieOpts::new())
 }
 
 /// This module is a python module implemented in Rust.
 #[pymodule]
 fn xtrie(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add_wrapped(wrap_pyfunction!(mk_trie))?;
+    m.add_wrapped(wrap_pyfunction!(mk_opts))?;
     m.add_wrapped(wrap_pyfunction!(load_from_path))?;
     m.add_wrapped(wrap_pyfunction!(parse_asm))?;
     m.add_wrapped(wrap_pyfunction!(get_opcode_count))?;
+    m.add_class::<XTrieOpts>()?;
     m.add_class::<XTrie>()?;
     m.add_class::<PyRecord>()?;
 
     Ok(())
 }
+

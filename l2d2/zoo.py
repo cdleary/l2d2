@@ -15,8 +15,7 @@ _FC = 4096  # Fully connected neurons to use on last hidden output.
 CLASSES = INPUT_BYTES+1 # Length categories; 0 for "not a valid instruction".
 
 # We turn the input bytes into some number of input floats.
-VALUE_OPTS = preprocess.ValueOpts(byte=True, nibbles=False, crumbs=False, bits=False)
-INPUT_FLOATS_PER_BYTE = len(preprocess.value_byte_to_floats(0, VALUE_OPTS))
+INPUT_FLOATS_PER_BYTE = 15
 BYTES = 15              # Input byte count (with instruction data).
 INPUT_FLOATS = (        # Bytes are turned into a number of floats.
     BYTES * INPUT_FLOATS_PER_BYTE)
@@ -62,20 +61,25 @@ def step(xs, p, carry_len: int):
 
 
 @jax.partial(jax.jit, static_argnums=3)
-def loss(p, sample, target, carry_len: int):
+def loss_and_preds(p, sample, target, carry_len: int):
     batch_size = sample.shape[0]
     assert sample.shape == (batch_size, INPUT_FLOATS)
     assert target.shape == (batch_size,), target.shape
     predictions = step(sample, p, carry_len)
     labels = jax.nn.one_hot(target, CLASSES, dtype='float32')
-    return jnp.sum((labels - predictions)**2)
+    return (jnp.sum((labels - predictions)**2), predictions)
+
+
+@jax.partial(jax.jit, static_argnums=3)
+def loss(p, sample, target, carry_len: int):
+    return loss_and_preds(p, sample, target, carry_len)[0]
 
 
 @jax.partial(jax.jit, static_argnums=(4, 5, 6))
 def train_step(i, opt_state, sample, target, carry_len: int, get_params, opt_update):
     batch_size = sample.shape[0]
-    assert sample.shape == (batch_size, INPUT_FLOATS)
-    assert target.shape == (batch_size,), target
+    assert sample.shape == (batch_size, INPUT_FLOATS), (sample.shape, INPUT_FLOATS)
+    assert target.shape == (batch_size,), target.shape
     params = get_params(opt_state)
     g = jax.grad(loss)(params, sample, target, carry_len)
     return opt_update(i, g, opt_state)
@@ -124,8 +128,8 @@ def main():
     options.add_model_hparams(parser)
     opts, args = parser.parse_args()
 
-    opt_init, opt_update, get_params = optimizers.adagrad(step_size=opts.step_size)
-    #opt_init, opt_update, get_params = optimizers.sgd(step_size=opts.step_size)
+    #opt_init, opt_update, get_params = optimizers.adagrad(step_size=opts.step_size)
+    opt_init, opt_update, get_params = optimizers.sgd(step_size=opts.step_size)
 
     key = rng.PRNGKey(0)
     p = init_params(key, opts.carry_len)

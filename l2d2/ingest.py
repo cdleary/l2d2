@@ -57,8 +57,8 @@ def ingest_binary(state: xtrie.XTrie, path: str) -> None:
         state.insert(bs, mnemonic.strip())
 
 
-def load_state(path: str) -> xtrie.XTrie:
-    return xtrie.load_from_path(path)
+def load_state(path: str, opts: xtrie.XTrieOpts) -> xtrie.XTrie:
+    return xtrie.load_from_path(path, opts)
 
 
 def dump_state(state: xtrie.XTrie, path: str) -> None:

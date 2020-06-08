@@ -1,7 +1,7 @@
 import xtrie
 
 
-mk_trie = lambda: xtrie.mk_trie(keep_asm=True)
+mk_trie = lambda: xtrie.mk_trie(xtrie.XtrieOpts(keep_asm=True))
 
 
 def test_simple_insert_and_histo():

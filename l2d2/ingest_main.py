@@ -51,7 +51,8 @@ def _do_ingest(opts, state: xtrie.XTrie) -> None:
 def _do_load_state(opts) -> xtrie.XTrie:
     print('loading state...', file=sys.stderr)
     load_start = datetime.now()
-    state = ingest.load_state(opts.trie_path)
+    xtopts = xtrie.mk_opts()
+    state = ingest.load_state(opts.trie_path, xtopts)
     load_end = datetime.now()
     print('load time:', load_end-load_start, file=sys.stderr)
     return state

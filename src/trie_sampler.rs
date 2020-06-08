@@ -1,4 +1,7 @@
 use rand::thread_rng;
+
+extern crate test;
+
 use rand::Rng;
 use rand::seq::SliceRandom;
 
@@ -10,6 +13,26 @@ pub struct Record {
     pub length: u8,
     pub opcode: u16,
     pub asm: Option<String>
+}
+
+pub struct MiniBatch {
+    pub bytes: Vec<Vec<u8>>,
+    pub length: Vec<u8>,
+    pub opcode: Vec<u16>,
+    pub asm: Vec<Option<String>>,
+    pub floats: Vec<Vec<f32>>,
+}
+
+impl MiniBatch {
+    fn new(minibatch_size: usize) -> MiniBatch {
+        MiniBatch{
+            bytes: Vec::with_capacity(minibatch_size),
+            length: Vec::with_capacity(minibatch_size),
+            opcode: Vec::with_capacity(minibatch_size),
+            asm: Vec::with_capacity(minibatch_size),
+            floats: vec![],
+        }
+    }
 }
 
 /// Randomly selects a terminal from within "node".
@@ -85,4 +108,52 @@ pub fn sample_nr(
         }
         None => None,
     }
+}
+
+pub fn sample_nr_mb(
+    node: &mut Vec<trie::TrieElem>,
+    target_length: u8,
+    minibatch_size: u8
+) -> MiniBatch {
+    let mut mb = MiniBatch::new(minibatch_size as usize);
+    for _ in 0..minibatch_size {
+        match sample_nr(node, Some(target_length)) {
+            Some(r) => {
+                mb.bytes.push(r.bytes);
+                mb.length.push(r.length);
+                mb.opcode.push(r.opcode);
+                mb.asm.push(r.asm);
+            }
+            None => {
+                mb.bytes.push(vec![0u8; target_length as usize]);
+                mb.length.push(0);
+                mb.opcode.push(0);
+                mb.asm.push(None);
+            }
+        }
+    }
+    mb
+}
+
+#[cfg(test)]
+mod tests {
+
+use std::fs::File;
+use super::*;
+use test::Bencher;
+
+#[bench]
+fn bench_sample_nr(b: &mut Bencher) {
+    let file = File::open("/tmp/x86.state").unwrap();
+    let mut trie: trie::Trie = bincode::deserialize_from(file).unwrap();
+    b.iter(|| test::black_box(sample_nr(&mut trie.root, Some(15))));
+}
+
+#[bench]
+fn bench_sample_nr_mb(b: &mut Bencher) {
+    let file = File::open("/tmp/x86.state").unwrap();
+    let mut trie: trie::Trie = bincode::deserialize_from(file).unwrap();
+    b.iter(|| test::black_box(sample_nr_mb(&mut trie.root, 15, 128)));
+}
+
 }
