@@ -17,6 +17,7 @@ from jax import numpy as jnp
 from jax.experimental import optimizers
 
 import ingest
+import options
 import preprocess
 import sampler
 import zoo
@@ -78,18 +79,28 @@ class StatRecorder:
 def _do_train(opt_state, eval_data, epochs: int, batch_size: int, carry_len: int,
               train_steps_per_eval: int, q: queue.Queue, stat_recorder: StatRecorder, get_params, opt_update):
     print('... starting training')
+
     train_start = datetime.datetime.now()
 
     for epoch in range(epochs):
         print('... epoch start', epoch)
+        epoch_start = datetime.datetime.now()
         stepno = 0
+
+        def compute_rate(now=None):
+            now = now or datetime.datetime.now()
+            steps_per_sec = stepno / (now-train_start).total_seconds()
+            samples_per_sec = steps_per_sec * batch_size
+            return '{:6.2f} step/s => {:8,.2f} samples/s'.format(
+                              steps_per_sec, samples_per_sec)
+
         while True:
             if stepno % train_steps_per_eval == train_steps_per_eval - 1:
                 now = datetime.datetime.now()
+                rate = compute_rate(now)
                 print()
                 print('... epoch', epoch, 'step', stepno, '@', now,
-                      '@ {:.2f} step/s'.format(
-                          stepno / (now-train_start).total_seconds()))
+                      '@', rate)
                 accuracy = run_eval(get_params(opt_state), eval_data, carry_len)
                 stat_recorder.note_eval_accuracy(epoch, stepno, accuracy)
 
@@ -106,7 +117,7 @@ def _do_train(opt_state, eval_data, epochs: int, batch_size: int, carry_len: int
             stepno += 1
             sys.stdout.write('.')
             if stepno % 64 == 0:
-                sys.stdout.write('\n')
+                print(' ' + compute_rate())
 
         # End of epoch!
         print()
@@ -155,18 +166,13 @@ def run_train(opts) -> None:
 
 def main():
     parser = optparse.OptionParser()
-    parser.add_option('--batch-size', type=int, default=32,
-                      help='minibatch size')
-    parser.add_option('--carry-len', type=int, default=1024,
-                      help='vector length for recurrent state')
     parser.add_option('--epochs', type=int, default=8,
                       help='number of iterations through the training data before completing')
     parser.add_option('--steps-per-eval', type=int, default=4096,
                       help='Number of training steps to perform before doing an accuracy evaluation')
     parser.add_option('--eval-minibatches', type=int, default=128,
                       help='number of minibatches to use for eval (test) data')
-    parser.add_option('--step-size', type=float, default=1e-6,
-                      help='optimizer step size')
+    options.add_model_hparams(parser)
     opts, args = parser.parse_args()
     run_train(opts)
 

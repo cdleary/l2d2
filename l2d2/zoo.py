@@ -1,10 +1,12 @@
 import datetime
+import optparse
 
 import jax
 from jax import random as rng
 from jax.experimental import optimizers
 from jax import numpy as jnp
 
+import options
 import preprocess
 
 
@@ -13,7 +15,7 @@ _FC = 4096  # Fully connected neurons to use on last hidden output.
 CLASSES = INPUT_BYTES+1 # Length categories; 0 for "not a valid instruction".
 
 # We turn the input bytes into some number of input floats.
-VALUE_OPTS = preprocess.ValueOpts(byte=True, nibbles=True, crumbs=True, bits=True)
+VALUE_OPTS = preprocess.ValueOpts(byte=True, nibbles=False, crumbs=False, bits=False)
 INPUT_FLOATS_PER_BYTE = len(preprocess.value_byte_to_floats(0, VALUE_OPTS))
 BYTES = 15              # Input byte count (with instruction data).
 INPUT_FLOATS = (        # Bytes are turned into a number of floats.
@@ -118,23 +120,24 @@ def time_train_step(batch_size: int, carry_len: int, opt_state, get_params, opt_
 
 
 def main():
-    STEP_SIZE = 1e-3
-    CARRY_LEN = 1024
-    BATCH_SIZE = 128
-    opt_init, opt_update, get_params = optimizers.adagrad(step_size=STEP_SIZE)
-    #opt_init, opt_update, get_params = optimizers.sgd(step_size=STEP_SIZE)
+    parser = optparse.OptionParser()
+    options.add_model_hparams(parser)
+    opts, args = parser.parse_args()
+
+    opt_init, opt_update, get_params = optimizers.adagrad(step_size=opts.step_size)
+    #opt_init, opt_update, get_params = optimizers.sgd(step_size=opts.step_size)
 
     key = rng.PRNGKey(0)
-    p = init_params(key, CARRY_LEN)
+    p = init_params(key, opts.carry_len)
     opt_state = opt_init(p)
-    fwd_time, step_time = time_train_step(BATCH_SIZE, CARRY_LEN, opt_state, get_params, opt_update)
+    fwd_time, step_time = time_train_step(opts.batch_size, opts.carry_len, opt_state, get_params, opt_update)
     steps_per_sec = 1.0/step_time.total_seconds()
-    samples_per_sec = steps_per_sec * BATCH_SIZE
+    samples_per_sec = steps_per_sec * opts.batch_size
     fwd_percent = fwd_time.total_seconds() / step_time.total_seconds() * 100.0
     fwd_us = int(fwd_time.total_seconds() * 1e6)
     step_us = int(step_time.total_seconds() * 1e6)
-    print(f'bs{BATCH_SIZE:<8} fwd time approximately:  {fwd_us:6,} us ({fwd_percent:.2f}%)')
-    print(f'bs{BATCH_SIZE:<8} step time approximately: {step_us:6,} us; {steps_per_sec:.1f} '
+    print(f'bs{opts.batch_size:<8} fwd time approximately:  {fwd_us:6,} us ({fwd_percent:.2f}%)')
+    print(f'bs{opts.batch_size:<8} step time approximately: {step_us:6,} us; {steps_per_sec:.1f} '
           f'steps/s; {samples_per_sec:.1f} samples/s')
 
 
