@@ -1,3 +1,9 @@
+"""Library with functions for ingestion of x86 binaries.
+
+Wraps the xtrie native module. TODO(cdleary) This could all be moved to native
+Rust (particularly for fun, as it may not be compute bound).
+"""
+
 from dataclasses import dataclass
 from datetime import datetime
 import os
@@ -59,5 +65,5 @@ def dump_state(state: xtrie.XTrie, path: str) -> None:
     state.dump_to_path(path)
 
 
-def mk_state() -> xtrie.XTrie:
-    return xtrie.mk_trie()
+def mk_state(keep_asm: bool) -> xtrie.XTrie:
+    return xtrie.mk_trie(keep_asm)

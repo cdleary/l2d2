@@ -57,11 +57,22 @@ impl PyRecord {
 struct MiniBatch {
     bytes: Vec<Vec<u8>>,
     #[pyo3(get)]
-    sizes: Vec<u8>,
+    lengths: Vec<u8>,
     #[pyo3(get)]
     opcodes: Vec<u16>,
 }
 
+#[pymethods]
+impl MiniBatch {
+    #[getter]
+    fn bytes<'p>(&self, py: Python<'p>) -> PyResult<Vec<&'p PyBytes>> {
+        let mut result = vec![];
+        for bytes in self.bytes.iter() {
+            result.push(PyBytes::new(py, &bytes))
+        }
+        Ok(result)
+    }
+}
 
 #[pyproto]
 impl pyo3::class::PyObjectProtocol for PyRecord {
@@ -152,17 +163,17 @@ impl XTrie {
         minibatch_size: u8,
         length: u8,
     ) -> PyResult<MiniBatch> {
-        let mut mb = MiniBatch{bytes: vec![], sizes: vec![], opcodes: vec![]};
+        let mut mb = MiniBatch{bytes: vec![], lengths: vec![], opcodes: vec![]};
         for _ in 0..minibatch_size {
             match trie_sampler::sample_nr(&mut self.trie.root, Some(length)) {
                 Some(r) => {
                     mb.bytes.push(r.bytes);
-                    mb.sizes.push(r.length);
+                    mb.lengths.push(r.length);
                     mb.opcodes.push(r.opcode);
                 }
                 None => {
                     mb.bytes.push(vec![0u8; length as usize]);
-                    mb.sizes.push(0);
+                    mb.lengths.push(0);
                     mb.opcodes.push(0);
                 }
             }

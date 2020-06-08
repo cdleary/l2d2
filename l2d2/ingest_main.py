@@ -82,7 +82,7 @@ def main():
     if os.path.exists(opts.trie_path) and opts.load:
         state = _do_load_state(opts)
     else:
-        state = ingest.mk_state()
+        state = ingest.mk_state(keep_asm=False)
 
     if opts.ingest:
         _do_ingest(opts, state)
