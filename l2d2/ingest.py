@@ -65,5 +65,5 @@ def dump_state(state: xtrie.XTrie, path: str) -> None:
     state.dump_to_path(path)
 
 
-def mk_state(keep_asm: bool) -> xtrie.XTrie:
-    return xtrie.mk_trie(keep_asm)
+def mk_state(xtopts: xtrie.XTrieOpts) -> xtrie.XTrie:
+    return xtrie.mk_trie(xtopts)

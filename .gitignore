@@ -6,3 +6,5 @@ l2d2.egg-info/
 *.lprof
 Cargo.lock
 xtrie.cpython-*.so
+build/
+dist/
