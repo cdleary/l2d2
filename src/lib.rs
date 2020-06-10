@@ -1,14 +1,19 @@
 #![feature(test)]
 
+extern crate test;
+
 use std::fs::File;
 
-use pyo3::exceptions;
 use pyo3::prelude::*;
-use pyo3::types::PyBytes;
-use pyo3::types::PyBool;
+use pyo3::PyTraverseError;
+use pyo3::gc::{PyGCProtocol, PyVisit};
+use pyo3::exceptions;
+use pyo3::types::{PyBytes, PyBool};
 use pyo3::wrap_pyfunction;
 use pyo3::class::basic::CompareOp;
 use pyo3::{PyErr, Python};
+
+use numpy::{PyArray, PyArray1, PyArray2};
 
 mod asm_parser;
 mod trie;
@@ -103,22 +108,34 @@ impl PyRecord {
 /// Vector-scaled version of a PyRecord.
 #[pyclass]
 struct PyMiniBatch {
-    mb: trie_sampler::MiniBatch
+    mb: trie_sampler::MiniBatch,
+    #[pyo3(get)]
+    floats: PyObject,
+    #[pyo3(get)]
+    lengths: PyObject,
+}
+
+#[pyproto]
+impl PyGCProtocol for PyMiniBatch {
+    fn __traverse__(&self, visit: PyVisit) -> Result<(), PyTraverseError> {
+        visit.call(&self.floats)?;
+        visit.call(&self.lengths)?;
+        Ok(())
+    }
+
+    fn __clear__(&mut self) {
+        let gil = GILGuard::acquire();
+        let py = gil.python();
+        py.release(&self.floats);
+        py.release(&self.lengths);
+    }
 }
 
 #[pymethods]
 impl PyMiniBatch {
     #[getter]
-    fn floats(&self) -> PyResult<Vec<Vec<f32>>> {
-        Ok(self.mb.floats.clone())
-    }
-    #[getter]
-    fn lengths(&self) -> PyResult<Vec<u8>> {
-        Ok(self.mb.length.clone())
-    }
-    #[getter]
-    fn opcodes(&self) -> PyResult<Vec<u16>> {
-        Ok(self.mb.opcode.clone())
+    fn opcodes<'p>(&self, py: Python<'p>) -> PyResult<&'p PyArray1<u16>> {
+        Ok(PyArray::from_vec(py, self.mb.opcode.clone()))
     }
 }
 
@@ -211,12 +228,19 @@ impl XTrie {
         &mut self,
         minibatch_size: u8,
         length: u8,
+        py: Python,
     ) -> PyResult<PyMiniBatch> {
         let mut mb = trie_sampler::sample_nr_mb(&mut self.trie.root, length, minibatch_size);
         for bytes in &mb.bytes {
             mb.floats.push(bytes_to_floats(&bytes, &self.opts));
         }
-        Ok(PyMiniBatch{mb})
+        let floats = PyArray::from_vec2(py, &mb.floats)?;
+        let lengths = PyArray::from_vec(py, mb.length.clone());
+        Ok(PyMiniBatch{mb, floats: floats.to_object(py), lengths: lengths.to_object(py)})
+    }
+
+    pub fn nop<'p>(&self, py: Python<'p>) -> PyResult<(&'p PyArray2<f32>, &'p PyArray1<u16>)> {
+        Ok((PyArray2::zeros(py, [128, 15], false), PyArray1::zeros(py, [128], false)))
     }
 }
 
@@ -263,3 +287,42 @@ fn xtrie(_py: Python, m: &PyModule) -> PyResult<()> {
     Ok(())
 }
 
+#[cfg(test)]
+mod tests {
+
+use super::*;
+use test::Bencher;
+
+#[bench]
+fn py_bench_nop(b: &mut Bencher) {
+    let mut xt: XTrie = load_from_path("/tmp/x86.state", mk_opts().unwrap()).unwrap();
+    let gil = GILGuard::acquire();
+    let py = gil.python();
+    b.iter(|| test::black_box(xt.nop(py)));
+}
+
+#[bench]
+fn py_bench_sample_nr_mb_1(b: &mut Bencher) {
+    let mut xt: XTrie = load_from_path("/tmp/x86.state", mk_opts().unwrap()).unwrap();
+    let gil = GILGuard::acquire();
+    let py = gil.python();
+    b.iter(|| test::black_box(xt.sample_nr_mb(1, 15, py)));
+}
+
+#[bench]
+fn py_bench_sample_nr_mb_32(b: &mut Bencher) {
+    let mut xt: XTrie = load_from_path("/tmp/x86.state", mk_opts().unwrap()).unwrap();
+    let gil = GILGuard::acquire();
+    let py = gil.python();
+    b.iter(|| test::black_box(xt.sample_nr_mb(32, 15, py)));
+}
+
+#[bench]
+fn py_bench_sample_nr_mb_128(b: &mut Bencher) {
+    let mut xt: XTrie = load_from_path("/tmp/x86.state", mk_opts().unwrap()).unwrap();
+    let gil = GILGuard::acquire();
+    let py = gil.python();
+    b.iter(|| test::black_box(xt.sample_nr_mb(128, 15, py)));
+}
+
+}

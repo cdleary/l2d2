@@ -1,5 +1,4 @@
 import collections
-import contextlib
 import datetime
 import functools
 import os
@@ -10,12 +9,14 @@ import time
 from typing import List, Tuple
 
 import termcolor
+import numpy as np
 
 import jax
 from jax import random as rng
 from jax import numpy as jnp
 from jax.experimental import optimizers
 
+from common import scoped_time
 import ingest
 import options
 import preprocess
@@ -30,10 +31,11 @@ def run_eval(p, eval_data: Tuple[jnp.array, jnp.array], carry_len: int) -> Tuple
     sys.stdout.flush()
     confusion = collections.defaultdict(lambda: 0)
     floats, wants = eval_data
+    print(f'... {len(floats)} samples')
     loss, probs = zoo.loss_and_preds(p, floats, wants, carry_len)
     gots = probs.argmax(axis=-1)
     for i in range(floats.shape[0]):
-        confusion[(wants[i], gots[i].item())] += 1
+        confusion[(wants[i].item(), gots[i].item())] += 1
 
     # Print out the confusion matrix.
     for want in range(zoo.CLASSES):
@@ -55,15 +57,6 @@ def run_eval(p, eval_data: Tuple[jnp.array, jnp.array], carry_len: int) -> Tuple
     return accuracy, loss
 
 
-@contextlib.contextmanager
-def scoped_time(annotation):
-    print('...', annotation)
-    start = datetime.datetime.now()
-    yield
-    end = datetime.datetime.now()
-    print('...', annotation, 'done in', end-start)
-
-
 class StatRecorder:
 
     def __init__(self):
@@ -71,13 +64,13 @@ class StatRecorder:
 
     def note_eval_accuracy(self, epochno: int, stepno: int, accuracy: float, loss: float):
         now = datetime.datetime.now()
-        print(f't: {now} epochno: {epochno} stepno: {stepno} accuracy: {accuracy} loss: {loss}', file=self.f)
+        print(f't: {now} epochno: {epochno:3d} stepno: {stepno:9,d} accuracy: {accuracy:5.2f} loss: {loss:9.6f}', file=self.f)
         self.f.flush()
 
 
 
 def _do_train(opt_state, eval_data, epochs: int, batch_size: int,
-              carry_len: int, train_steps_per_eval: int, q: queue.Queue,
+              carry_len: int, train_steps_per_eval: int, sampler: sampler.SamplerThread,
               stat_recorder: StatRecorder, get_params, opt_update):
     print('... starting training')
 
@@ -104,14 +97,18 @@ def _do_train(opt_state, eval_data, epochs: int, batch_size: int,
                 accuracy, loss = run_eval(get_params(opt_state), eval_data, carry_len)
                 stat_recorder.note_eval_accuracy(epoch, stepno, accuracy, loss)
 
-            # Grab item from the queue, see if it's a "terminate" sentinel.
-            item = q.get()
-            if item is None:
+            # Grab minibatch from the queue, see if it's a "terminate"
+            # sentinel.
+            mb = sampler.q.get()
+            if mb is None:
+                sampler.restart()
                 break  # Done with epoch.
 
-            floats, lengths = item 
-            opt_state = zoo.train_step(stepno, opt_state, floats, lengths,
-                                       carry_len, get_params, opt_update)
+            #print('i:', mb.floats[0])
+            #print('t:', mb.lengths[0])
+            opt_state = zoo.train_step(stepno, opt_state, mb.floats,
+                                       mb.lengths, carry_len, get_params,
+                                       opt_update)
             stepno += 1
             sys.stdout.write('.')
             if stepno % 64 == 0:
@@ -159,15 +156,19 @@ def run_train(opts) -> None:
 
     try:
         _do_train(opt_state, eval_data, opts.epochs, opts.batch_size,
-                  opts.carry_len, opts.steps_per_eval, q, stat_recorder,
+                  opts.carry_len, opts.steps_per_eval, sampler_thread,
+                   stat_recorder,
                   get_params, opt_update)
     except Exception as e:
+        print('... exception', e, ': terminating sampler thread.')
         sampler_thread.cancel()
         sampler_thread.join()
         raise
 
 
 def main():
+    #np.set_printoptions(linewidth=float('inf'))
+
     parser = optparse.OptionParser()
     parser.add_option('--epochs', type=int, default=8,
                       help='Number of iterations through the training data '

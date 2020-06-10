@@ -150,7 +150,7 @@ fn bench_sample_nr(b: &mut Bencher) {
 }
 
 #[bench]
-fn bench_sample_nr_mb(b: &mut Bencher) {
+fn bench_sample_nr_mb_128(b: &mut Bencher) {
     let file = File::open("/tmp/x86.state").unwrap();
     let mut trie: trie::Trie = bincode::deserialize_from(file).unwrap();
     b.iter(|| test::black_box(sample_nr_mb(&mut trie.root, 15, 128)));

@@ -1,11 +1,13 @@
 import datetime
 import threading
+import time
 import queue
 from typing import Tuple, List
 
 import numpy as np
 from jax import numpy as jnp
 
+from common import scoped_time
 import xtrie
 from zoo import BYTES
 
@@ -13,51 +15,134 @@ from zoo import BYTES
 class SamplerThread(threading.Thread):
     def __init__(self, queue: queue.Queue, data: xtrie.XTrie, batch_size: int):
         super().__init__()
-        self._queue = queue
+        self.q = queue
+        self._orig_data = data.clone()
         self._data = data
         self._batch_size = batch_size
         self._cancel = threading.Event()
+        self._start = threading.Event()
+
+    def restart(self):
+        self._data = self._orig_data.clone()
+        self._start.set()
 
     def cancel(self) -> None:
         self._cancel.set()
 
-    def _run_with_cancel(self, data_to_put) -> bool:
-        try:
-            self._queue.put(data_to_put, timeout=.1)
-        except queue.Full:
-            pass
-        return self._cancel.is_set()
+    def start(self):
+        self._start.set()
+        super().start()
 
     def run(self):
-        while not self._data.empty():
-            mb = self._data.sample_nr_mb(self._batch_size, BYTES)
-            floats = jnp.array(mb.floats, dtype='float32')
-            assert floats.shape[0] == self._batch_size
-            lengths = jnp.array(mb.lengths, dtype='uint8')
-            assert lengths.shape == (self._batch_size,)
-            mb = (floats, lengths)
-            while True:
-                did_cancel = self._run_with_cancel(mb)
-                if did_cancel:
-                    return
-        self._queue.put(None)
+        while True:
+            if self._cancel.is_set():
+                return
+            if not self._start.is_set():
+                time.sleep(0.1)
+                continue
+
+            i = 0
+            while not self._data.empty():
+                i += 1
+                mb = self._data.sample_nr_mb(self._batch_size, BYTES)
+                while True:
+                    try:
+                        self.q.put(mb, timeout=.1)
+                        break
+                    except queue.Full:
+                        if self._cancel.is_set():
+                            return
+            print(f'... done after {i} enqueues')
+            self.q.put(None)
+            self._start = threading.Event()
 
 
 def get_eval_data(data: xtrie.XTrie, batch_size: int,
                   eval_minibatches: int) -> Tuple:
-    data = data.clone()
-    eval_sample_start = datetime.datetime.now()
-    inputs, lengths, opcodes = [], [], []
+    data = data.clone()  # Clone the data because we sample w/o replacement.
+    inputs, lengths = [], []
     for _ in range(eval_minibatches):
         mb = data.sample_nr_mb(batch_size, BYTES)
-        inputs += mb.floats
-        lengths += mb.lengths
-        opcodes += mb.opcodes
+        inputs.append(mb.floats)
+        lengths.append(mb.lengths)
 
-    inputs = np.array(inputs, dtype='float32')
-    lengths = np.array(lengths, dtype='uint8')
-    eval_sample_end = datetime.datetime.now()
-    print('sampling time per minibatch: {:.3f} us'.format(
-          (eval_sample_end-eval_sample_start).total_seconds()
-            / eval_minibatches * 1e6))
+    inputs = jnp.concatenate(inputs)
+    lengths = jnp.concatenate(lengths)
     return inputs, lengths
+
+
+
+def _benchmark_sample_nr_mb(data, batch_size: int):
+    print('... using batch size:', batch_size)
+
+    COUNT = 256
+    byte_count = BYTES
+    start = datetime.datetime.now()
+    for i in range(COUNT):
+        data.sample_nr_mb(batch_size, byte_count)
+    end = datetime.datetime.now()
+    direct_sample_usec = (end-start).total_seconds()/COUNT*1e6
+    print(f'... avg {direct_sample_usec:,.1f} usec/mb')
+    print(f'... avg {direct_sample_usec/batch_size:,.1f} usec/sample')
+
+
+def main():
+    import optparse
+    import timeit
+
+    import options
+    import ingest
+
+    parser = optparse.OptionParser()
+    options.add_model_hparams(parser)
+    opts, args = parser.parse_args()
+
+    xtopts = xtrie.mk_opts()
+    with scoped_time('loading x86 data'):
+        orig_data = ingest.load_state('/tmp/x86.state', xtopts)
+
+    data = orig_data.clone()
+
+    print('... timing nop call')
+    NOP_COUNT = 4096
+    start = datetime.datetime.now()
+    for i in range(NOP_COUNT):
+        data.nop()
+    end = datetime.datetime.now()
+    nop_call_nsec = (end-start).total_seconds() * 1e9 / NOP_COUNT
+    print(f'... nop call avg {nop_call_nsec:,.3f} nsec')
+
+    for bs in (128,):
+        _benchmark_sample_nr_mb(data, bs)
+
+    data = orig_data.clone()
+
+    q = queue.Queue()
+    sampler = SamplerThread(q, data, opts.batch_size)
+    sampler.start()
+
+    with scoped_time('warmup0'):
+        mb = q.get()  # Warmup.
+        assert mb.floats.shape[0] == opts.batch_size
+        assert mb.lengths.shape == (opts.batch_size,)
+
+    with scoped_time('warmup1'):
+        q.get()
+
+    COUNT = 256
+    start = datetime.datetime.now()
+    for _ in range(COUNT):
+        q.get()
+    end = datetime.datetime.now()
+
+    sampler.cancel()
+    sampler.join()
+
+    seconds = (end-start).total_seconds()
+    print('throughput:            {:,.2f} mb/s'.format(COUNT/seconds))
+    print('amortized / minibatch: {:,.2f} usec'.format(seconds/COUNT*1e6))
+
+
+
+if __name__ == '__main__':
+    main()

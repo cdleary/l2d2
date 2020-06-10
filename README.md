@@ -19,3 +19,20 @@ And then train on that ingested data:
 ```
 python l2d2/attempt.py
 ```
+
+## Rust Benchmarks
+
+```
+$ cargo bench --no-default-features
+```
+
+## Tips
+
+Ensure that any development on the Rust extension that requires performance
+measurements uses:
+
+```
+python setup.py install
+```
+
+Using `develop` instead will not use "release" mode.

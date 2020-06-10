@@ -3,5 +3,5 @@ def add_model_hparams(parser):
                       help='minibatch size')
     parser.add_option('--carry-len', type=int, default=512,
                       help='vector length for recurrent state')
-    parser.add_option('--step-size', type=float, default=1e-6,
+    parser.add_option('--step-size', type=float, default=1e-3,
                       help='optimizer step size')
