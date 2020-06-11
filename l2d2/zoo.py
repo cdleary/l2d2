@@ -81,8 +81,8 @@ def train_step(i, opt_state, sample, target, carry_len: int, get_params, opt_upd
     assert sample.shape == (batch_size, INPUT_FLOATS), (sample.shape, INPUT_FLOATS)
     assert target.shape == (batch_size,), target.shape
     params = get_params(opt_state)
-    g = jax.grad(loss)(params, sample, target, carry_len)
-    return opt_update(i, g, opt_state)
+    l, g = jax.value_and_grad(loss)(params, sample, target, carry_len)
+    return opt_update(i, g, opt_state), l
 
 
 def time_train_step(batch_size: int, carry_len: int, opt_state, get_params, opt_update) -> datetime.timedelta:

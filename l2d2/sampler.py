@@ -5,7 +5,6 @@ import queue
 from typing import Tuple, List
 
 import numpy as np
-from jax import numpy as jnp
 
 from common import scoped_time
 import xtrie
@@ -66,8 +65,8 @@ def get_eval_data(data: xtrie.XTrie, batch_size: int,
         inputs.append(mb.floats)
         lengths.append(mb.lengths)
 
-    inputs = jnp.concatenate(inputs)
-    lengths = jnp.concatenate(lengths)
+    inputs = np.concatenate(inputs)
+    lengths = np.concatenate(lengths)
     return inputs, lengths
 
 

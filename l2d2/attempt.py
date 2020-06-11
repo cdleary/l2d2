@@ -106,13 +106,14 @@ def _do_train(opt_state, eval_data, epochs: int, batch_size: int,
 
             #print('i:', mb.floats[0])
             #print('t:', mb.lengths[0])
-            opt_state = zoo.train_step(stepno, opt_state, mb.floats,
+            opt_state, loss = zoo.train_step(stepno, opt_state, mb.floats,
                                        mb.lengths, carry_len, get_params,
                                        opt_update)
             stepno += 1
-            sys.stdout.write('.')
-            if stepno % 64 == 0:
-                print(' ' + compute_rate())
+            if stepno & 7 == 7:
+                print(f'{loss.item():.3f} ', end='')
+            if stepno & 63 == 63:
+                print('|', compute_rate())
 
         # End of epoch!
         print()
@@ -128,6 +129,7 @@ def _do_train(opt_state, eval_data, epochs: int, batch_size: int,
 
 def run_train(opts) -> None:
     """Runs a training routine."""
+    print('... using adagrad optimizer')
     opt_init, opt_update, get_params = optimizers.adagrad(
         step_size=opts.step_size)
 
@@ -170,13 +172,13 @@ def main():
     #np.set_printoptions(linewidth=float('inf'))
 
     parser = optparse.OptionParser()
-    parser.add_option('--epochs', type=int, default=8,
+    parser.add_option('--epochs', type=int, default=1024,
                       help='Number of iterations through the training data '
                            'before completing')
     parser.add_option('--steps-per-eval', type=int, default=4096,
                       help='Number of training steps to perform before doing '
                            'an accuracy evaluation')
-    parser.add_option('--eval-minibatches', type=int, default=16,
+    parser.add_option('--eval-minibatches', type=int, default=128,
                       help='number of minibatches to use for eval (test) data')
     options.add_model_hparams(parser)
     opts, args = parser.parse_args()

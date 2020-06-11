@@ -60,9 +60,12 @@ struct PyRecord {
 }
 
 fn byte_to_float(x: u8) -> f32 {
-    f32::from_bits((127 << 23) | (x as u32))
+    let f = f32::from_bits((127 << 23) | (x as u32)) - 1f32;
+    assert!(0f32 <= f && f <= 1f32);
+    f
 }
 
+/// Converts each byte in a sequence of bytes into its broken-down-fields form.
 fn bytes_to_floats(bytes: &[u8], opts: &XTrieOpts) -> Vec<f32> {
     let mut result = Vec::with_capacity((opts.byte as usize) + 2 * (opts.nibbles as usize) + 4 * (opts.crumbs as usize) + 8 * (opts.bits as usize));
     for &byte in bytes {
