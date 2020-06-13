@@ -25,14 +25,14 @@ import xtrie
 import zoo
 
 
-def run_eval(p, eval_data: Tuple[jnp.array, jnp.array], carry_len: int) -> Tuple[float, float]:
+def run_eval(p, eval_data: Tuple[jnp.array, jnp.array], rng_key, carry_len: int) -> Tuple[float, float]:
     """Runs evaluation step on the given eval_minibatches with parameters p."""
     print('... running eval')
     sys.stdout.flush()
     confusion = collections.defaultdict(lambda: 0)
     floats, wants = eval_data
     print(f'... {len(floats)} samples')
-    loss, probs = zoo.loss_and_preds(p, floats, wants, carry_len)
+    loss, probs = zoo.loss_and_preds(p, floats, wants, rng_key, carry_len, False)
     gots = probs.argmax(axis=-1)
     for i in range(floats.shape[0]):
         confusion[(wants[i].item(), gots[i].item())] += 1
@@ -69,7 +69,7 @@ class StatRecorder:
 
 
 
-def _do_train(opt_state, eval_data, epochs: int, batch_size: int,
+def _do_train(opt_state, eval_data, epochs: int, batch_size: int, rng_key,
               carry_len: int, train_steps_per_eval: int, sampler: sampler.SamplerThread,
               stat_recorder: StatRecorder, get_params, opt_update):
     print('... starting training')
@@ -94,7 +94,7 @@ def _do_train(opt_state, eval_data, epochs: int, batch_size: int,
                 rate = compute_rate(now)
                 print()
                 print('... epoch', epoch, 'step', stepno, '@', now, '@', rate)
-                accuracy, loss = run_eval(get_params(opt_state), eval_data, carry_len)
+                accuracy, loss = run_eval(get_params(opt_state), eval_data, rng_key, carry_len)
                 stat_recorder.note_eval_accuracy(epoch, stepno, accuracy, loss)
 
             # Grab minibatch from the queue, see if it's a "terminate"
@@ -107,11 +107,11 @@ def _do_train(opt_state, eval_data, epochs: int, batch_size: int,
             #print('i:', mb.floats[0])
             #print('t:', mb.lengths[0])
             opt_state, loss = zoo.train_step(stepno, opt_state, mb.floats,
-                                       mb.lengths, carry_len, get_params,
+                                       mb.lengths, rng_key, carry_len, get_params,
                                        opt_update)
             stepno += 1
             if stepno & 7 == 7:
-                print(f'{loss.item():.3f} ', end='')
+                print(f'{loss.item():7.3f} ', end='')
             if stepno & 63 == 63:
                 print('|', compute_rate())
 
@@ -119,7 +119,7 @@ def _do_train(opt_state, eval_data, epochs: int, batch_size: int,
         print()
         print(f'... end of epoch {epoch}; {stepno} steps => {stepno * batch_size} samples')
         p = get_params(opt_state)
-        accuracy, loss = run_eval(p, eval_data, carry_len)
+        accuracy, loss = run_eval(p, eval_data, rng_key, carry_len)
         stat_recorder.note_eval_accuracy(epoch, stepno, accuracy, loss)
 
     train_end = datetime.datetime.now()
@@ -129,14 +129,22 @@ def _do_train(opt_state, eval_data, epochs: int, batch_size: int,
 
 def run_train(opts) -> None:
     """Runs a training routine."""
-    print('... using adagrad optimizer')
-    opt_init, opt_update, get_params = optimizers.adagrad(
-        step_size=opts.step_size)
+    if opts.optimizer == 'momentum':
+        print('... using momentum optimizer')
+        opt_init, opt_update, get_params = optimizers.momentum(mass=0.9,
+            step_size=opts.step_size)
+    elif opts.optimizer == 'sgd':
+        print('... using sgd optimizer')
+        opt_init, opt_update, get_params = optimizers.sgd(step_size=opts.step_size)
+    else:
+        assert opts.optimizer == 'adagrad'
+        print('... using adagrad optimizer')
+        opt_init, opt_update, get_params = optimizers.adagrad(step_size=opts.step_size)
 
     with scoped_time('initializing params'):
         # Initialize parameters.
-        key = rng.PRNGKey(0)
-        p = zoo.init_params(key, opts.carry_len)
+        rng_key = rng.PRNGKey(0)
+        p = zoo.init_params(rng_key, opts.carry_len)
 
         # Package up in optimizer state.
         opt_state = opt_init(p)
@@ -158,7 +166,7 @@ def run_train(opts) -> None:
 
     try:
         _do_train(opt_state, eval_data, opts.epochs, opts.batch_size,
-                  opts.carry_len, opts.steps_per_eval, sampler_thread,
+                  rng_key, opts.carry_len, opts.steps_per_eval, sampler_thread,
                    stat_recorder,
                   get_params, opt_update)
     except Exception as e:
@@ -169,7 +177,7 @@ def run_train(opts) -> None:
 
 
 def main():
-    #np.set_printoptions(linewidth=float('inf'))
+    np.set_printoptions(linewidth=float('inf'))
 
     parser = optparse.OptionParser()
     parser.add_option('--epochs', type=int, default=1024,

@@ -12,7 +12,7 @@ import pprint
 import re
 import subprocess as subp
 import sys
-from typing import List, Tuple
+from typing import List, Tuple, Optional
 
 import xtrie
 
@@ -25,7 +25,7 @@ _RELADDR_RE = re.compile(r'(jmpq?|j[abgln]?e|j[abglops]|jn[eops]|callq)\s+[\da-f
 _SYMBOL_RE = re.compile(r'\<[^>]+\>')
 
 
-def ingest_binary(state: xtrie.XTrie, path: str) -> None:
+def ingest_binary(state: xtrie.XTrie, path: str, len_limit: Optional[int] = None) -> None:
     before_total = state.total
     print(f'... ingesting {path:<60} (before: {before_total:12,})', file=sys.stderr)
     output = subp.check_output(['objdump', '-d', path, '-w', '-j', '.text']).decode('utf-8')
@@ -40,6 +40,9 @@ def ingest_binary(state: xtrie.XTrie, path: str) -> None:
         assert len(bs) <= 16, 'Overlong instruction'
         if len(bs) == 16:  # Data disassembly.
             continue
+        bs = bytes(int(b, 16) for b in bs)
+        if len_limit is not None and len(bs) >= len_limit:
+            continue
         addr = int(m.group('addr'), 16)
         mnemonic = m.group('mnemonic').strip() 
         if not mnemonic:
@@ -53,7 +56,6 @@ def ingest_binary(state: xtrie.XTrie, path: str) -> None:
         if not mnemonic or mnemonic.startswith('rex') or mnemonic.startswith('(bad)'):
             continue
         xtrie.parse_asm(mnemonic)
-        bs = bytes(int(b, 16) for b in bs)
         state.insert(bs, mnemonic.strip())
 
 

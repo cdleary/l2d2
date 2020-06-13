@@ -62,7 +62,12 @@ struct PyRecord {
 fn byte_to_float(x: u8) -> f32 {
     let f = f32::from_bits((127 << 23) | (x as u32)) - 1f32;
     assert!(0f32 <= f && f <= 1f32);
+    //(f-0.5)*2.0
     f
+}
+
+fn bit_to_float(x: bool) -> f32 {
+    if x { 1.0f32 } else { -1.0f32 }
 }
 
 /// Converts each byte in a sequence of bytes into its broken-down-fields form.
@@ -84,7 +89,7 @@ fn bytes_to_floats(bytes: &[u8], opts: &XTrieOpts) -> Vec<f32> {
         }
         if opts.bits {
             for i in 0..8 {
-                result.push(byte_to_float((byte >> i) & 0x1));
+                result.push(bit_to_float(((byte >> i) & 0x1) != 0));
             }
         }
     }
@@ -229,7 +234,7 @@ impl XTrie {
 
     pub fn sample_nr_mb(
         &mut self,
-        minibatch_size: u8,
+        minibatch_size: usize,
         length: u8,
         py: Python,
     ) -> PyResult<PyMiniBatch> {

@@ -24,7 +24,7 @@ def find_binaries(dirpath):
 
 
 def _do_ingest(opts, state: xtrie.XTrie) -> None:
-    print('ingesting...', file=sys.stderr)
+    print(f'ingesting... len limit {opts.len_limit}', file=sys.stderr)
     ingest_start = datetime.now()
 
     bin_path = opts.bin_path or os.getenv('PATH')
@@ -36,7 +36,7 @@ def _do_ingest(opts, state: xtrie.XTrie) -> None:
         if not state.try_add_binary(binpath):
             print(f'... already seen {binpath:<60}', file=sys.stderr)
             continue
-        ingest.ingest_binary(state, binpath)
+        ingest.ingest_binary(state, binpath, opts.len_limit)
 
     ingest_end = datetime.now()
     print('... ingested for', ingest_end - ingest_start, file=sys.stderr)
@@ -75,6 +75,8 @@ def main():
     parser.add_option(
         '--ingest-limit', default=None, type='int',
         help='Limit on number of binaries to ingest; e.g. for testing')
+    parser.add_option('--len-limit', default=None, type='int',
+                      help='Limit on asm bytes to ingest; e.g. 5 would mean [1..4] byte instructions inclusive')
     opts, parse = parser.parse_args()
 
     known_opcodes = xtrie.get_opcode_count()

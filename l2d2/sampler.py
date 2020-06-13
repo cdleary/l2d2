@@ -8,7 +8,7 @@ import numpy as np
 
 from common import scoped_time
 import xtrie
-from zoo import BYTES
+from zoo import INPUT_BYTES
 
 
 class SamplerThread(threading.Thread):
@@ -20,10 +20,12 @@ class SamplerThread(threading.Thread):
         self._batch_size = batch_size
         self._cancel = threading.Event()
         self._start = threading.Event()
+        self.i = 0
 
     def restart(self):
         self._data = self._orig_data.clone()
         self._start.set()
+        self.i = 0
 
     def cancel(self) -> None:
         self._cancel.set()
@@ -40,10 +42,9 @@ class SamplerThread(threading.Thread):
                 time.sleep(0.1)
                 continue
 
-            i = 0
             while not self._data.empty():
-                i += 1
-                mb = self._data.sample_nr_mb(self._batch_size, BYTES)
+                self.i += 1
+                mb = self._data.sample_nr_mb(self._batch_size, INPUT_BYTES)
                 while True:
                     try:
                         self.q.put(mb, timeout=.1)
@@ -51,7 +52,7 @@ class SamplerThread(threading.Thread):
                     except queue.Full:
                         if self._cancel.is_set():
                             return
-            print(f'... done after {i} enqueues')
+            print(f'... done after {self.i} enqueues')
             self.q.put(None)
             self._start = threading.Event()
 
@@ -61,7 +62,7 @@ def get_eval_data(data: xtrie.XTrie, batch_size: int,
     data = data.clone()  # Clone the data because we sample w/o replacement.
     inputs, lengths = [], []
     for _ in range(eval_minibatches):
-        mb = data.sample_nr_mb(batch_size, BYTES)
+        mb = data.sample_nr_mb(batch_size, INPUT_BYTES)
         inputs.append(mb.floats)
         lengths.append(mb.lengths)
 

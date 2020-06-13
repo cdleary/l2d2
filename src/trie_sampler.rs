@@ -113,9 +113,9 @@ pub fn sample_nr(
 pub fn sample_nr_mb(
     node: &mut Vec<trie::TrieElem>,
     target_length: u8,
-    minibatch_size: u8
+    minibatch_size: usize
 ) -> MiniBatch {
-    let mut mb = MiniBatch::new(minibatch_size as usize);
+    let mut mb = MiniBatch::new(minibatch_size);
     for _ in 0..minibatch_size {
         match sample_nr(node, Some(target_length)) {
             Some(r) => {
