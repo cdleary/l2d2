@@ -13,7 +13,7 @@ use pyo3::wrap_pyfunction;
 use pyo3::class::basic::CompareOp;
 use pyo3::{PyErr, Python};
 
-use numpy::{PyArray, PyArray1};
+use numpy::{PyArray, PyArray1, PyArray2};
 
 mod asm_parser;
 mod trie;
@@ -64,6 +64,10 @@ fn byte_to_float(x: u8) -> f32 {
     assert!(0f32 <= f && f <= 1f32);
     //(f-0.5)*2.0
     f
+}
+
+fn byte_to_float_inverse(f: f32) -> u8 {
+    (f32::to_bits(f+1.0f32) & 0xff) as u8
 }
 
 fn bit_to_float(x: bool) -> f32 {
@@ -274,6 +278,18 @@ fn mk_trie(opts: XTrieOpts) -> PyResult<XTrie> {
 }
 
 #[pyfunction]
+fn floats_to_bytes(f: &PyArray2<f32>, opts: XTrieOpts) -> PyResult<Vec<u8>> {
+    if !opts.byte {
+        return Err(PyErr::new::<exceptions::ValueError, _>(format!("Only XTrieOpts with 'byte' enabled are supported")));
+    }
+    let mut result = vec![];
+    for i in 0..f.shape()[0] {
+        result.push(byte_to_float_inverse(*f.get([i,0]).unwrap()))
+    }
+    Ok(result)
+}
+
+#[pyfunction]
 fn load_from_path(path: &str, opts: XTrieOpts) -> PyResult<XTrie> {
     let file = File::open(path)?;
     let trie = bincode::deserialize_from(file).unwrap();
@@ -293,6 +309,7 @@ fn xtrie(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add_wrapped(wrap_pyfunction!(load_from_path))?;
     m.add_wrapped(wrap_pyfunction!(parse_asm))?;
     m.add_wrapped(wrap_pyfunction!(get_opcode_count))?;
+    m.add_wrapped(wrap_pyfunction!(floats_to_bytes))?;
     m.add_class::<XTrieOpts>()?;
     m.add_class::<XTrie>()?;
     m.add_class::<PyRecord>()?;

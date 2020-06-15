@@ -1,6 +1,7 @@
 import collections
 import datetime
 import pickle
+import subprocess as subp
 
 import flax
 import jax
@@ -8,6 +9,7 @@ from jax import numpy as jnp
 
 from l2d2 import common
 from l2d2 import sampler
+import xtrie
 
 
 class CNN(flax.nn.Module):
@@ -78,7 +80,11 @@ def train(s: sampler.SamplerThread, opts):
     return optimizer
 
 
-def do_eval(model, eval_data, opts):
+def disasm_bytes(bs) -> str:
+    return subp.check_output(['/usr/bin/ndisasm', '-b', '64', '-'], input=bytes(bs)).decode('utf-8').strip()
+
+
+def do_eval(model, eval_data, opts, xtopts):
     floats, want_lengths = eval_data
     print('eval floats: ', floats.shape)
     print('eval lengths:', want_lengths.shape)
@@ -92,7 +98,12 @@ def do_eval(model, eval_data, opts):
     assert got_lengths.shape == want_lengths.shape, (got_lengths.shape, want_lengths.shape)
     confusion = collections.defaultdict(lambda: 0)
     for i in range(floats.shape[0]):
-        confusion[(want_lengths[i].item(), got_lengths[i].item())] += 1
+        wl = want_lengths[i].item()
+        gl = got_lengths[i].item()
+        confusion[(wl, gl)] += 1
+        if wl != gl:
+            bs = xtrie.floats_to_bytes(floats[i], xtopts)[:want_lengths[i]]
+            print(' '.join(f'{b:02x}' for b in bs), '\n::', disasm_bytes(bs))
 
     common.print_confusion(confusion, classes=opts.len_limit)
 
@@ -126,7 +137,6 @@ def main():
 
     from l2d2 import ingest
     from l2d2 import options
-    import xtrie
 
     parser = optparse.OptionParser()
     parser.add_option('--epochs', type=int, default=32,
@@ -167,7 +177,7 @@ def main():
     with common.scoped_time('getting eval data'):
         eval_data = sampler.get_eval_data(data, opts.batch_size,
                                           opts.eval_minibatches)
-    do_eval(model, eval_data, opts)
+    do_eval(model, eval_data, opts, xtopts)
 
     s.cancel()
     s.join()
