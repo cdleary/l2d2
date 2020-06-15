@@ -3,7 +3,7 @@ from typing import List
 
 import numpy as np
 
-import float_helpers
+from l2d2 import float_helpers
 
 
 def byte_to_float(x) -> float:

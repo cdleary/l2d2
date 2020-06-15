@@ -13,7 +13,7 @@ use pyo3::wrap_pyfunction;
 use pyo3::class::basic::CompareOp;
 use pyo3::{PyErr, Python};
 
-use numpy::{PyArray, PyArray1, PyArray2};
+use numpy::{PyArray, PyArray1};
 
 mod asm_parser;
 mod trie;
@@ -71,29 +71,31 @@ fn bit_to_float(x: bool) -> f32 {
 }
 
 /// Converts each byte in a sequence of bytes into its broken-down-fields form.
-fn bytes_to_floats(bytes: &[u8], opts: &XTrieOpts) -> Vec<f32> {
-    let mut result = Vec::with_capacity((opts.byte as usize) + 2 * (opts.nibbles as usize) + 4 * (opts.crumbs as usize) + 8 * (opts.bits as usize));
+fn bytes_to_floats(bytes: &[u8], opts: &XTrieOpts) -> Vec<Vec<f32>> {
+    let mut all_bytes_data: Vec<Vec<f32>> = vec![];
     for &byte in bytes {
+        let mut byte_data: Vec<f32> = vec![];
         if opts.byte {
-            result.push(byte_to_float(byte));
+            byte_data.push(byte_to_float(byte));
         }
         if opts.nibbles {
-            result.push(byte_to_float(byte >> 4));
-            result.push(byte_to_float(byte & 0xff));
+            byte_data.push(byte_to_float(byte >> 4));
+            byte_data.push(byte_to_float(byte & 0xff));
         }
         if opts.crumbs {
-            result.push(byte_to_float((byte >> 6) & 0x3));
-            result.push(byte_to_float((byte >> 4) & 0x3));
-            result.push(byte_to_float((byte >> 2) & 0x3));
-            result.push(byte_to_float((byte >> 0) & 0x3));
+            byte_data.push(byte_to_float((byte >> 6) & 0x3));
+            byte_data.push(byte_to_float((byte >> 4) & 0x3));
+            byte_data.push(byte_to_float((byte >> 2) & 0x3));
+            byte_data.push(byte_to_float((byte >> 0) & 0x3));
         }
         if opts.bits {
             for i in 0..8 {
-                result.push(bit_to_float(((byte >> i) & 0x1) != 0));
+                byte_data.push(bit_to_float(((byte >> i) & 0x1) != 0));
             }
         }
+        all_bytes_data.push(byte_data);
     }
-    result
+    all_bytes_data
 }
 
 #[pymethods]
@@ -239,17 +241,20 @@ impl XTrie {
         py: Python,
     ) -> PyResult<PyMiniBatch> {
         let mut mb = trie_sampler::sample_nr_mb(&mut self.trie.root, length, minibatch_size);
-        for bytes in &mb.bytes {
-            mb.floats.push(bytes_to_floats(&bytes, &self.opts));
+        for sample_bytes in &mb.bytes {
+            let sample_floats = bytes_to_floats(&sample_bytes, &self.opts);
+            //eprintln!("sample floats len: {}", sample_floats.len());
+            mb.floats.push(sample_floats);
         }
-        let floats = PyArray::from_vec2(py, &mb.floats)?;
+        assert!(mb.floats.len() == mb.bytes.len());
+        let floats = PyArray::from_vec3(py, &mb.floats)?;
         let lengths = PyArray::from_vec(py, mb.length.clone());
         Ok(PyMiniBatch{mb, floats: floats.to_object(py), lengths: lengths.to_object(py)})
     }
 
-    pub fn nop<'p>(&self, py: Python<'p>) -> PyResult<(&'p PyArray2<f32>, &'p PyArray1<u16>)> {
-        Ok((PyArray2::zeros(py, [128, 15], false), PyArray1::zeros(py, [128], false)))
-    }
+    //pub fn nop<'p>(&self, py: Python<'p>) -> PyResult<(&'p PyArray2<f32>, &'p PyArray1<u16>)> {
+    //    Ok((PyArray2::zeros(py, [128, 15], false), PyArray1::zeros(py, [128], false)))
+    //}
 }
 
 #[pyfunction]

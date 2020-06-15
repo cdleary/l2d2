@@ -7,8 +7,8 @@ from jax.experimental import optimizers
 from jax import numpy as jnp
 from jax.nn.initializers import glorot_normal, normal
 
-import options
-import preprocess
+from l2d2 import options
+from l2d2 import preprocess
 
 
 INPUT_BYTES = 8         # Number of input bytes (upper limit).

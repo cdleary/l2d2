@@ -20,7 +20,11 @@ pub struct MiniBatch {
     pub length: Vec<u8>,
     pub opcode: Vec<u16>,
     pub asm: Vec<Option<String>>,
-    pub floats: Vec<Vec<f32>>,
+
+    // (batch_size, byteno, float_data)
+    // e.g. perhaps (32, 8, 15) for 8-byte-length input data where we expand
+    // into 15 floats.
+    pub floats: Vec<Vec<Vec<f32>>>,
 }
 
 impl MiniBatch {

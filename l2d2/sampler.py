@@ -6,17 +6,17 @@ from typing import Tuple, List
 
 import numpy as np
 
-from common import scoped_time
+from l2d2.common import scoped_time
+from l2d2.zoo import INPUT_BYTES
 import xtrie
-from zoo import INPUT_BYTES
 
 
 class SamplerThread(threading.Thread):
     def __init__(self, queue: queue.Queue, data: xtrie.XTrie, batch_size: int):
         super().__init__()
         self.q = queue
-        self._orig_data = data.clone()
-        self._data = data
+        self._orig_data = data
+        self._data = data.clone()
         self._batch_size = batch_size
         self._cancel = threading.Event()
         self._start = threading.Event()
@@ -34,7 +34,21 @@ class SamplerThread(threading.Thread):
         self._start.set()
         super().start()
 
-    def run(self):
+    def get_epoch_iterator(self):
+        self.restart()
+        while True:
+            try:
+                mb = self.q.get(timeout=.1)
+            except queue.Empty:
+                if self._cancel.is_set():
+                    return
+                else:
+                    continue
+            if mb is None:
+                return
+            yield mb
+
+    def _run(self):
         while True:
             if self._cancel.is_set():
                 return
@@ -56,12 +70,22 @@ class SamplerThread(threading.Thread):
             self.q.put(None)
             self._start = threading.Event()
 
+    def run(self):
+        try:
+            self._run()
+        except Exception as e:
+            self._cancel.set()
+            raise
+
 
 def get_eval_data(data: xtrie.XTrie, batch_size: int,
                   eval_minibatches: int) -> Tuple:
     data = data.clone()  # Clone the data because we sample w/o replacement.
     inputs, lengths = [], []
     for _ in range(eval_minibatches):
+        if data.empty():
+            # If we don't have enough minibatches, break early.
+            break
         mb = data.sample_nr_mb(batch_size, INPUT_BYTES)
         inputs.append(mb.floats)
         lengths.append(mb.lengths)

@@ -37,23 +37,8 @@ def run_eval(p, eval_data: Tuple[jnp.array, jnp.array], rng_key, carry_len: int)
     for i in range(floats.shape[0]):
         confusion[(wants[i].item(), gots[i].item())] += 1
 
-    # Print out the confusion matrix.
-    for want in range(zoo.CLASSES):
-        print(f'want {want:2d}: ', end='')
-        for got in range(zoo.CLASSES):
-            value = confusion[(want, got)]
-            color = 'green' if want == got else ('red' if value != 0 else None)
-            print(termcolor.colored(f'{value:5d}', color=color), end=' ')
-        print()
-
-    # Print out summary accuracy statistic(s).
-    correct = sum(
-            confusion[(i, i)]
-            for i in range(zoo.CLASSES))
-    total = sum(confusion.values())
-    accuracy = correct / float(total) * 100.0
-    print(f'loss: {loss:.3f} accuracy: {accuracy:.2f}% ({correct} / {total})')
-    sys.stdout.flush()
+    print(f'loss: {loss:.3f}')
+    accuracy = common.print_confusion(confusion, zoo.CLASSES)
     return accuracy, loss
 
 
@@ -186,8 +171,6 @@ def main():
     parser.add_option('--steps-per-eval', type=int, default=4096,
                       help='Number of training steps to perform before doing '
                            'an accuracy evaluation')
-    parser.add_option('--eval-minibatches', type=int, default=128,
-                      help='number of minibatches to use for eval (test) data')
     options.add_model_hparams(parser)
     opts, args = parser.parse_args()
     run_train(opts)
