@@ -61,11 +61,14 @@ def train(s: sampler.SamplerThread, opts):
     start = datetime.datetime.now()
 
     for epoch in range(opts.epochs):
-        print('... epoch', epoch, datetime.datetime.now()-start)
+        epoch_start = datetime.datetime.now()
+        print('... epoch', epoch, epoch_start-start)
         for minibatch in s.get_epoch_iterator():
             assert minibatch.floats.shape == (opts.batch_size, 8, 15)
             assert minibatch.lengths.shape == (opts.batch_size,)
             optimizer = train_step(optimizer, (minibatch.floats, minibatch.lengths), opts.len_limit)
+        steps_per_sec = s.i/(datetime.datetime.now()-epoch_start).total_seconds()
+        print('... finished epoch', epoch, f'{steps_per_sec:.2f} steps/s')
 
     print('... dumping model to disk:', opts.model)
     with open(opts.model, 'wb') as f:
