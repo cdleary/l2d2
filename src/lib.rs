@@ -283,7 +283,7 @@ fn compute_compression_ratio(f: &PyArrayDyn<f32>) -> PyResult<f64> {
     let compressed_bits = fp_compress::compress(f.as_slice()?).len();
     let orig_bytes = f.len() * 4;
     let compressed_bytes = if compressed_bits != 0 { (compressed_bits + 7) / 8 } else { 1 };
-    Ok((compressed_bytes as f64) / (orig_bytes as f64))
+    Ok((orig_bytes as f64) / (compressed_bytes as f64))
 }
 
 #[pyfunction]

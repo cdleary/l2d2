@@ -1,5 +1,7 @@
+import bz2
 import collections
 import datetime
+import gzip
 import pickle
 import subprocess as subp
 
@@ -49,11 +51,26 @@ def train_step(optimizer, minibatch, num_classes: int):
     return optimizer
 
 
+def _compute_compression_ratio(a, algo):
+    b = a.tobytes()
+    if algo == 'gzip':
+        compressed = gzip.compress(b)
+    elif algo == 'bz2':
+        compressed = bz2.compress(b)
+    else:
+        raise ValueError
+    return float(len(b))/len(compressed)
+
+
 def print_compression_ratios(optimizer):
     state = flax.serialization.to_state_dict(optimizer.target)
     for leaf in jax.tree_util.tree_leaves(state):
-        ratio = xtrie.compute_compression_ratio(leaf.copy())
-        termcolor.cprint(' compression: {:.3f}'.format(ratio), color='red' if ratio > 1.0 else 'green')
+        dfcmish_ratio = xtrie.compute_compression_ratio(leaf.copy())
+        gzip_ratio = _compute_compression_ratio(leaf.copy(), 'gzip')
+        bz2_ratio = _compute_compression_ratio(leaf.copy(), 'bz2')
+        termcolor.cprint(' gzip:    {:.2f}'.format(gzip_ratio), color='red' if gzip_ratio < 1.0 else 'green')
+        termcolor.cprint(' bz2:     {:.2f}'.format(bz2_ratio), color='red' if bz2_ratio < 1.0 else 'green')
+        termcolor.cprint(' dfcmish: {:.2f}'.format(dfcmish_ratio), color='red' if dfcmish_ratio < 1.0 else 'green')
 
 
 def train(s: sampler.SamplerThread, opts):
