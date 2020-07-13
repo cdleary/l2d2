@@ -6,10 +6,12 @@ import subprocess as subp
 import flax
 import jax
 from jax import numpy as jnp
+import termcolor
 
 from l2d2 import common
 from l2d2 import sampler
 import xtrie
+
 
 
 class CNN(flax.nn.Module):
@@ -47,6 +49,13 @@ def train_step(optimizer, minibatch, num_classes: int):
     return optimizer
 
 
+def print_compression_ratios(optimizer):
+    state = flax.serialization.to_state_dict(optimizer.target)
+    for leaf in jax.tree_util.tree_leaves(state):
+        ratio = xtrie.compute_compression_ratio(leaf.copy())
+        termcolor.cprint(' compression: {:.3f}'.format(ratio), color='red' if ratio > 1.0 else 'green')
+
+
 def train(s: sampler.SamplerThread, opts):
     if opts.train_continue:
         model = load_model(opts)
@@ -71,9 +80,11 @@ def train(s: sampler.SamplerThread, opts):
             optimizer = train_step(optimizer, (minibatch.floats, minibatch.lengths), opts.len_limit)
         steps_per_sec = s.i/(datetime.datetime.now()-epoch_start).total_seconds()
         print('... finished epoch', epoch, f'{steps_per_sec:.2f} steps/s')
+        print_compression_ratios(optimizer)
 
     print('... dumping model to disk:', opts.model)
     with open(opts.model, 'wb') as f:
+        print_compression_ratios(optimizer)
         state = flax.serialization.to_state_dict(optimizer.target)
         pickle.dump(state, f)
 

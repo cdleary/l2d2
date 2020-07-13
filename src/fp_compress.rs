@@ -73,7 +73,7 @@ fn push_bits(bits: &mut BitVec, value: u32, lsbs: u32) {
     }
 }
 
-fn compress(floats: &[f32]) -> BitVec {
+pub fn compress(floats: &[f32]) -> BitVec {
     let mut bits = BitVec::new();
     let mut predictor = Predictor::new();
     for f in floats {

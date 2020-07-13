@@ -13,7 +13,7 @@ use pyo3::wrap_pyfunction;
 use pyo3::class::basic::CompareOp;
 use pyo3::{PyErr, Python};
 
-use numpy::{PyArray, PyArray1, PyArray2};
+use numpy::{PyArray, PyArrayDyn, PyArray1, PyArray2};
 
 mod asm_parser;
 mod trie;
@@ -279,6 +279,14 @@ fn mk_trie(opts: XTrieOpts) -> PyResult<XTrie> {
 }
 
 #[pyfunction]
+fn compute_compression_ratio(f: &PyArrayDyn<f32>) -> PyResult<f64> {
+    let compressed_bits = fp_compress::compress(f.as_slice()?).len();
+    let orig_bytes = f.len() * 4;
+    let compressed_bytes = if compressed_bits != 0 { (compressed_bits + 7) / 8 } else { 1 };
+    Ok((compressed_bytes as f64) / (orig_bytes as f64))
+}
+
+#[pyfunction]
 fn floats_to_bytes(f: &PyArray2<f32>, opts: XTrieOpts) -> PyResult<Vec<u8>> {
     if !opts.byte {
         return Err(PyErr::new::<exceptions::ValueError, _>(format!("Only XTrieOpts with 'byte' enabled are supported")));
@@ -311,6 +319,7 @@ fn xtrie(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add_wrapped(wrap_pyfunction!(parse_asm))?;
     m.add_wrapped(wrap_pyfunction!(get_opcode_count))?;
     m.add_wrapped(wrap_pyfunction!(floats_to_bytes))?;
+    m.add_wrapped(wrap_pyfunction!(compute_compression_ratio))?;
     m.add_class::<XTrieOpts>()?;
     m.add_class::<XTrie>()?;
     m.add_class::<PyRecord>()?;
