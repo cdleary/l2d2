@@ -102,6 +102,8 @@ pub enum Opcode {
     CMPL,
     CMPQ,
 
+    CMPLTSD,
+
     JMP,
     JMPQ,
     SUB,
@@ -574,6 +576,7 @@ pub fn parse_opcode(s: &str) -> Option<Opcode> {
         "cmp" => Opcode::CMP,
         "cmpb" => Opcode::CMPB,
         "cmpl" => Opcode::CMPL,
+        "cmpltsd" => Opcode::CMPLTSD,
         "cmpq" => Opcode::CMPQ,
         "test" => Opcode::TEST,
         "shr" => Opcode::SHR,

@@ -101,7 +101,7 @@ def do_eval(model, eval_data, opts, xtopts):
         wl = want_lengths[i].item()
         gl = got_lengths[i].item()
         confusion[(wl, gl)] += 1
-        if wl != gl:
+        if opts.print_mismatch and wl != gl:
             bs = xtrie.floats_to_bytes(floats[i], xtopts)[:want_lengths[i]]
             print(' '.join(f'{b:02x}' for b in bs), '\n::', disasm_bytes(bs))
 
@@ -153,6 +153,8 @@ def main():
                       help='Load saved model before training')
     parser.add_option('--data', default='/tmp/x86.state',
                       help='Path to ingested x86 data')
+    parser.add_option('--print-mismatch', default=False, action='store_true',
+                      help='Print eval mismatches')
     options.add_model_hparams(parser)
     opts, args = parser.parse_args()
 
