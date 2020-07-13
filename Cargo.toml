@@ -13,6 +13,9 @@ numpy = { version = "0.9.0" }
 serde = { version = "1.0", features = ["derive"] }
 bincode = { version = "1.2.1" }
 rand = { version = "0.7.2" }
+bitvec = { version = "0.17.4" }
+log = { version = "0.4.8" }
+env_logger = { version = "0.7.1" }
 
 [dependencies.pyo3]
 version = "0.10.1"

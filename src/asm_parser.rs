@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Serialize, Deserialize, Clone, Copy)]
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Debug)]
 pub enum Opcode {
     UNKNOWN,
 
@@ -1019,4 +1019,83 @@ pub fn parse_opcode(s: &str) -> Option<Opcode> {
             return None;
         }
     })
+}
+
+#[derive(Debug,PartialEq)]
+enum Reg {
+    AX,
+    EAX,
+    ECX,
+    RAX,
+    RDI,
+    RSI,
+}
+
+fn str_to_register(s: &str) -> Option<Reg> {
+    Some(match s {
+        "ax" => Reg::AX,
+        "eax" => Reg::EAX,
+        "ecx" => Reg::ECX,
+        "rdi" => Reg::RDI,
+        "rsi" => Reg::RSI,
+        _ => return None,
+    })
+}
+
+#[derive(Debug,PartialEq)]
+enum Operand {
+    Immediate(i64),
+    Reg(Reg),
+}
+
+#[derive(Debug,PartialEq)]
+struct Asm {
+    opcode: Opcode,
+    operands: Vec<Operand>,
+}
+
+#[derive(Debug)]
+struct ParseError {
+    msg: String
+}
+
+fn parse(s: &str) -> Result<Asm, ParseError> {
+    let pieces: Vec<&str> = s.splitn(2, char::is_whitespace).collect();
+    let opcode = parse_opcode(pieces[0]).unwrap();
+    let operands_str = pieces[1];
+    let mut operands = vec![];
+    if let Some(reg) = str_to_register(operands_str) {
+        operands.push(Operand::Reg(reg));
+    } else {
+        eprintln!("operands: {:?}", operands_str);
+        let without_prefix = operands_str.trim_start_matches("0x");
+        let imm = i64::from_str_radix(without_prefix, 16).unwrap();
+        operands.push(Operand::Immediate(imm));
+    }
+    Ok(Asm{opcode, operands})
+}
+
+#[test]
+fn test_push_immediate() {
+    let got = parse("push 0x4e").unwrap();
+    let want = Asm{
+        opcode: Opcode::PUSH,
+        operands: vec![
+            Operand::Immediate(0x4e)
+        ],
+    };
+    assert_eq!(got, want);
+}
+
+#[test]
+fn test_test_rr() {
+    let got = parse("test eax,eax").unwrap();
+    let want = Asm{
+        opcode: Opcode::TEST,
+        operands: vec![
+            Operand::Reg(Reg::EAX),
+            Operand::Reg(Reg::EAX),
+        ],
+    };
+    assert_eq!(got, want);
 }

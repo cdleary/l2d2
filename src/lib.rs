@@ -18,6 +18,7 @@ use numpy::{PyArray, PyArray1, PyArray2};
 mod asm_parser;
 mod trie;
 mod trie_sampler;
+mod fp_compress;
 
 #[pyclass]
 #[derive(Clone)]
@@ -256,9 +257,9 @@ impl XTrie {
         Ok(PyMiniBatch{mb, floats: floats.to_object(py), lengths: lengths.to_object(py)})
     }
 
-    //pub fn nop<'p>(&self, py: Python<'p>) -> PyResult<(&'p PyArray2<f32>, &'p PyArray1<u16>)> {
-    //    Ok((PyArray2::zeros(py, [128, 15], false), PyArray1::zeros(py, [128], false)))
-    //}
+    pub fn nop<'p>(&self, py: Python<'p>) -> PyResult<(&'p PyArray2<f32>, &'p PyArray1<u16>)> {
+        Ok((PyArray2::zeros(py, [128, 15], false), PyArray1::zeros(py, [128], false)))
+    }
 }
 
 #[pyfunction]
