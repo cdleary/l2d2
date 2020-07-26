@@ -16,13 +16,14 @@ from jax import random as rng
 from jax import numpy as jnp
 from jax.experimental import optimizers
 
-from common import scoped_time
-import ingest
-import options
-import preprocess
-import sampler
+from .common import scoped_time
+from . import ingest
+from . import options
+from . import preprocess
+from . import sampler
+from . import zoo
+
 import xtrie
-import zoo
 
 
 def run_eval(p, eval_data: Tuple[jnp.array, jnp.array], rng_key, carry_len: int) -> Tuple[float, float]:

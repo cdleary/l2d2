@@ -6,9 +6,10 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from common import scoped_time
-import ingest
-import sampler
+from .common import scoped_time
+from . import ingest
+from . import sampler
+
 import xtrie
 
 
