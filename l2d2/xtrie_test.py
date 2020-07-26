@@ -1,7 +1,7 @@
 import xtrie
 
 
-mk_trie = lambda: xtrie.mk_trie(xtrie.XtrieOpts(keep_asm=True))
+mk_trie = lambda: xtrie.mk_trie(xtrie.mk_opts(keep_asm=True))
 
 
 def test_simple_insert_and_histo():
@@ -23,27 +23,31 @@ def test_multi_insert_and_histo():
     assert t.histo() == [0, 1, 2, 1]
 
     minibatch = t.sample_nr_mb(4, 3)
-    assert sorted(minibatch.sizes) == [1, 2, 2, 3]
+    assert sorted(minibatch.lengths) == [1, 2, 2, 3]
 
 
 def test_empty_sample():
     t = mk_trie()
-    assert t.sample_nr(None) is None
+    # Sample empty trie.
+    assert t.sample_nr(length=None) is None
+    # Insert a single entry then sample that w/o replacement.
     t.insert(b'1', 'add')
-    assert t.sample_nr(None) == xtrie.PyRecord(b'1', 1, 'add')
-    assert t.sample_nr(None) is None
+    assert t.sample_nr(length=None) == xtrie.PyRecord(b'1', 1, opcode='add', asm='add')
+    # Now it's empty again.
+    assert t.sample_nr(length=None) is None
 
 
 def test_simple_sample():
     t = mk_trie()
     t.insert(b'1', 'add')
     t.insert(b'22', 'sub')
-    avail = [xtrie.PyRecord(b'1', 1, 'add'), xtrie.PyRecord(b'22', 2, 'sub')]
-    got0 = t.sample_nr(None)
+    avail = [xtrie.PyRecord(b'1', 1, 'add', asm='add'),
+             xtrie.PyRecord(b'22', 2, 'sub', asm='sub')]
+    got0 = t.sample_nr(length=None)
     assert got0 in avail
     avail.remove(got0)
-    assert t.sample_nr(None) in avail
-    assert t.sample_nr(None) is None
+    assert t.sample_nr(length=None) in avail
+    assert t.sample_nr(length=None) is None
 
 
 def test_sample_length():

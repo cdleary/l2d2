@@ -1,14 +1,18 @@
 import bz2
 import collections
+from dataclasses import dataclass
 import datetime
 import gzip
 import pickle
 import subprocess as subp
 
+from typing import Tuple
+
 import flax
 import jax
 from jax import numpy as jnp
 import termcolor
+from matplotlib import pyplot as plt
 
 from l2d2 import common
 from l2d2 import sampler
@@ -62,8 +66,18 @@ def _compute_compression_ratio(a, algo):
     return float(len(b))/len(compressed)
 
 
-def print_compression_ratios(optimizer):
+@dataclass
+class ZInfo:
+    shape: Tuple[int]
+    dfcmish: float
+    gzip: float
+    bz2: float
+
+
+def print_compression_ratios(optimizer) -> Tuple[ZInfo]:
+    """Returns at tuple of the ZInfo for all leaves in the optimizer."""
     state = flax.serialization.to_state_dict(optimizer.target)
+    data = []
     for leaf in jax.tree_util.tree_leaves(state):
         dfcmish_ratio = xtrie.compute_compression_ratio(leaf.copy())
         gzip_ratio = _compute_compression_ratio(leaf.copy(), 'gzip')
@@ -71,6 +85,8 @@ def print_compression_ratios(optimizer):
         termcolor.cprint(' gzip:    {:.2f}'.format(gzip_ratio), color='red' if gzip_ratio < 1.0 else 'green')
         termcolor.cprint(' bz2:     {:.2f}'.format(bz2_ratio), color='red' if bz2_ratio < 1.0 else 'green')
         termcolor.cprint(' dfcmish: {:.2f}'.format(dfcmish_ratio), color='red' if dfcmish_ratio < 1.0 else 'green')
+        data.append(ZInfo(leaf.shape, dfcmish_ratio, gzip_ratio, bz2_ratio))
+    return tuple(data)
 
 
 def train(s: sampler.SamplerThread, opts):
@@ -85,6 +101,8 @@ def train(s: sampler.SamplerThread, opts):
     optimizer = flax.optim.Adam(
       learning_rate=opts.step_size, weight_decay=1e-5).create(model)
 
+    zdata = []  # List[Tuple[ZInfo]]
+
     print('... training for', opts.epochs, 'epochs')
     start = datetime.datetime.now()
 
@@ -97,13 +115,26 @@ def train(s: sampler.SamplerThread, opts):
             optimizer = train_step(optimizer, (minibatch.floats, minibatch.lengths), opts.len_limit)
         steps_per_sec = s.i/(datetime.datetime.now()-epoch_start).total_seconds()
         print('... finished epoch', epoch, f'{steps_per_sec:.2f} steps/s')
-        print_compression_ratios(optimizer)
+        zdata.append(print_compression_ratios(optimizer))
 
     print('... dumping model to disk:', opts.model)
     with open(opts.model, 'wb') as f:
         print_compression_ratios(optimizer)
         state = flax.serialization.to_state_dict(optimizer.target)
         pickle.dump(state, f)
+
+    buffers = len(zdata[0])
+    fig, axes = plt.subplots(ncols=buffers, sharey=True)
+    for i in range(buffers):
+        ys = collections.defaultdict(list)
+        for data in zdata:
+            for key in ('dfcmish', 'gzip', 'bz2'):
+                ys[key].append(getattr(data[i], key))
+        for name, y in ys.items():
+            axes[i].plot(y, label=name)
+        axes[i].set_title(str(zdata[0][i].shape))
+    plt.legend()
+    plt.show()
 
     return optimizer
 

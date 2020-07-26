@@ -31,8 +31,8 @@ struct XTrieOpts {
 }
 
 impl XTrieOpts {
-    fn new() -> XTrieOpts {
-        return XTrieOpts{byte: true, nibbles: true, crumbs: true, bits: true, keep_asm: false}
+    fn new(keep_asm: bool) -> XTrieOpts {
+        return XTrieOpts{byte: true, nibbles: true, crumbs: true, bits: true, keep_asm}
     }
 }
 
@@ -111,7 +111,7 @@ impl PyRecord {
             Some(opcode_enum) => opcode_enum as u16,
             None => return Err(PyErr::new::<exceptions::ValueError, _>(format!("Invalid opcode {:?}", opcode))),
         };
-        Ok(PyRecord{bytes: bytes.clone(), length: length, opcode: opcode, asm: asm.clone()})
+        Ok(PyRecord{bytes: bytes.clone(), length: length, opcode: opcode, asm})
     }
 
     #[getter]
@@ -157,7 +157,7 @@ impl PyMiniBatch {
 #[pyproto]
 impl pyo3::class::PyObjectProtocol for PyRecord {
     fn __repr__(&self) -> PyResult<String> {
-        Ok(format!("Record{{bytes: {:?}, length: {}, opcode: {}}}", self.bytes, self.length, self.opcode))
+        Ok(format!("PyRecord{{bytes: {:?}, length: {}, opcode: {}, asm: {:?}}}", self.bytes, self.length, self.opcode, self.asm))
     }
     fn __richcmp__(&self, other: PyRecord, op: CompareOp) -> PyResult<PyObject> {
         let gil = GILGuard::acquire();
@@ -306,8 +306,8 @@ fn load_from_path(path: &str, opts: XTrieOpts) -> PyResult<XTrie> {
 }
 
 #[pyfunction]
-fn mk_opts() -> PyResult<XTrieOpts> {
-    Ok(XTrieOpts::new())
+fn mk_opts(keep_asm: bool) -> PyResult<XTrieOpts> {
+    Ok(XTrieOpts::new(keep_asm))
 }
 
 /// This module is a python module implemented in Rust.
